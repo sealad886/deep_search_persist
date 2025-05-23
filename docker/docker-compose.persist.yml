@@ -89,7 +89,7 @@ services:
       - searxng_data_volume:/data/searxng_data:rw
       - redis_data:/usr/local/searxng/redis:rw
       - temp_pdf_data:/data/temp_pdf_data:rw
-      - ./docker/searxng:/etc/searxng:ro
+      - ./searxng:/etc/searxng:ro
     depends_on:
       - redis
       - nginx
@@ -148,7 +148,7 @@ services:
       - "80:80"
     restart: unless-stopped
     volumes:
-      - ./docker/nginx:/etc/nginx:ro
+      - ./nginx:/etc/nginx:ro
     healthcheck:
       test: [
         "CMD",
