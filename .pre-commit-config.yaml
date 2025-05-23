@@ -1,0 +1,46 @@
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.4.2  # Updated to latest stable
+    hooks:
+      - id: black
+        language_version: python3
+        # It's generally recommended to format test code as well.
+        # Consider removing `exclude: tests` unless you have a specific reason.
+  - repo: https://github.com/pycqa/flake8
+    rev: 7.1.0  # Updated to latest stable
+    hooks:
+      - id: flake8
+        language_version: python3
+        # It's generally recommended to lint test code as well.
+        # Consider removing `exclude: tests` unless you have a specific reason.
+        # Ensure flake8's line length matches black's, see pyproject.toml or .flake8 example below.
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0  # Updated to latest stable for mypy 1.10
+    hooks:
+      - id: mypy
+        additional_dependencies: [types-requests]
+        # It's generally recommended to type-check test code as well.
+        # Consider removing `exclude: tests` unless you have a specific reason.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0  # Updated to latest stable
+    hooks:
+      # trailing-whitespace and end-of-file-fixer are handled by black
+      - id: check-yaml
+      - id: detect-private-key
+      - id: name-tests-test
+  # isort is removed as black handles import sorting.
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.13.1-beta
+    hooks:
+      - id: hadolint
+        name: dockerfilelint
+        files: ^Dockerfile
+  - repo: https://github.com/PyCQA/bandit
+    rev: 1.7.9  # Updated to latest stable
+    hooks:
+      - id: bandit
+        name: bandit
+        entry: bandit -r deep_search_persist
+        language: python
+        types: [python]
+        exclude: deep_search_persist/tests/

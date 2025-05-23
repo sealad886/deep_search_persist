@@ -1,0 +1,40 @@
+[LocalAI]
+ollama_base_url = "${OLLAMA_BASE_URL}"
+default_model_ctx = 256000
+reason_model_ctx = -1
+
+[API]
+openai_compat_api_key = "${OPENAI_COMPAT_API_KEY}"
+jina_api_key = "${JINA_API_KEY}"
+openai_url = "${OPENAI_URL}"
+jina_base_url = "${JINA_BASE_URL}"
+searxng_url = "http://host.docker.internal:4000/search"
+
+[Settings]
+use_jina = false
+use_ollama = true
+with_planning = true
+default_model = "gemma3:4b"
+reason_model = "qwen3:14b"
+
+[Concurrency] # for browser
+concurrent_limit = 3
+cool_down = 10.0
+chrome_port = 9222
+chrome_host_ip = "http://host.docker.internal"
+use_embed_browser = true
+
+[Parsing]
+temp_pdf_dir = "/data/temp_pdf_data"
+browse_lite = 0
+pdf_max_pages = 30
+pdf_max_filesize = 20971520
+timeout_pdf = 120
+max_html_length = 5120
+max_eval_time = 180
+verbose_web_parse_detail = true
+
+[Ratelimits] # for AI endpoints
+request_per_minute = 12
+operation_wait_time = 10
+fallback_model = "llama3.2:3b-instruct-q8_0"

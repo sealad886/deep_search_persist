@@ -1,0 +1,23 @@
+{
+    "search.useIgnoreFiles": true,
+    "python.analysis.exclude": [
+        "archive",
+        "build",
+        "dist",
+        "**/__pycache__",
+        "**/.*cache", // e.g., .pytest_cache, .mypy_cache, .ruff_cache
+        "**/.git",
+        "**/.hg",
+        "**/.svn",
+        "**/build",
+        "**/dist",
+        "**/*.egg-info",
+        "**/node_modules", // If you have JS/TS in the same project
+        "**/venv",
+        "**/.venv",
+        "**/env",
+        "**/ENV",
+        "**/docs/_build",
+        "**/htmlcov"
+    ]
+}

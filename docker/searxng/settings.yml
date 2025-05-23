@@ -1,0 +1,57 @@
+use_default_settings: true
+
+general:
+  instance_name: 'searxng'
+  debug: false
+  limit_time: 60
+  limit_count: 60
+  block_time: 3600
+
+search:
+  autocomplete: 'google'
+  suspended_times:
+    SearxEngineCaptcha: 101657
+    # For error "Too many request" and "HTTP error 429"
+    SearxEngineTooManyRequests: 4500
+  formats:
+    - html
+    - json
+  limit_time: 60
+  limit_count: 60
+  block_time: 3600
+
+server:
+  secret_key: '67ce31fcf94e1ba244f03993d49743448f3ebdb368cc8158ce8552071ac19c01' # Is overwritten by ${SEARXNG_SECRET} - amc override 13.03.2025
+  limiter: true
+
+engines:
+  - name: wolframalpha
+    disabled: false
+  - name: brave
+    disabled: false
+  - name: duckduckgo
+    disabled: true
+  - name: google
+    disabled: false
+  # read https://docs.searxng.org/dev/engines/online/mullvad_leta.html
+  - name: mullvadleta
+    engine: mullvad_leta
+    leta_engine: google # choose one of the following: google, brave
+    use_cache: true  # Only 100 non-cache searches per day, suggested only for private instances
+    search_url: https://leta.mullvad.net
+    categories: [general, web]
+    shortcut: ml
+    disabled: false
+
+redis:
+  url: "redis://redis:6379/0"
+  # redis_password = "" # Leave empty if no password set
+
+image_proxy:
+  limit_time: 60
+  limit_count: 20
+  block_time: 1800
+result_proxy:
+  limit_time: 60
+  limit_count: 25
+  block_time: 1800

@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=58.1.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "deep-search"
+version = "0.2.0"
+description = "A deep search engine for LLMs that uses Ollama and FastAPI."
+readme = "README.md"
+license = "GPL-3.0-or-later"
+authors = [
+    {name = "Andrew Cox", email = "dev@andrewcox.doctor"},
+]
+entry-points = { scripts = { deep_search = "deep_search_persist.__main__:main" } }
+keywords = [
+    "deep-search",
+    "deep-research",
+    "deep-search-engine",
+    "ollama",
+    "fastapi",
+    "llm",
+    "search-engine",
+]
+urls = {"github" = "https://github.com/sealad886/deep-search-persist"}
+requires-python = ">=3.11,<3.13"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+]
+dynamic = ["dependencies", "optional-dependencies"]
+
+# Optional dependencies are dynamically calculated in setup.py
+
+[tool.setuptools.packages.find]
+include = ["deep_search_persist*"]
+
+[tool.black]
+line-length = 120  # Or 120, or your preferred "reasonable" length
+# target-version = ['py38', 'py39', 'py310', 'py311'] # Specify your supported Python versions
+
+[tool.flake8]
+max-line-length = 120  # Should match black's line-length
+# Ignore rules that conflict with black or are less critical
+# E203: whitespace before ':' (black handles this)
+# W503: line break before binary operator (black prefers this, flake8 used to warn)
+extend-ignore = "E203, W503"
+# You might also want to ignore other specific warnings if they become too "obstructive"
+# For example, to ignore docstring related warnings from flake8-docstrings (if you use it):
+# extend-ignore = "E203, W503, D100, D101, D102, D103, D104, D105, D106, D107"
+
+[tool.bandit]
+assert_used = {skips = ['*_test.py', '*test_*.py']}

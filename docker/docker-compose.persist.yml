@@ -1,0 +1,188 @@
+services:
+  mongo:
+    image: mongo:6.0
+    container_name: mongo
+    restart: on-failure
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=deep_search
+    healthcheck:
+      test: ["CMD", "mongo", "--eval", "db.adminCommand('ping')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  app-persist:
+    container_name: app-persist
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - temp_pdf_data:/data/temp_pdf_data:rw
+      - app_persist_data:/app/data:rw
+    environment:
+      - PYTHONUNBUFFERED=1
+      - MONGO_URI=${MONGO_URI}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL}
+    depends_on:
+      - mongo
+      - searxng-persist
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://host.docker.internal:8000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  gradio-ui:
+    container_name: gradio-ui
+    env_file:
+      - .env
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    command: ["python", "-m", "deep_search_persist.launch_webui"]
+    ports:
+      # Host port is configurable via GRADIO_HOST_PORT in .env, defaulting to 7861.
+      # Container port 7860 is the default, but can be changed in research.toml's WebUI.gradio_container_port
+      # Ensure the container port here matches what's set in research.toml (default 7860)
+      - "${GRADIO_HOST_PORT:-7861}:${GRADIO_CONTAINER_PORT:-7860}"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - DEEP_SEARCH_API_BASE_URL=http://app-persist:8000/v1 # For Gradio to find the backend
+    depends_on:
+      - app-persist
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7860"]
+      interval: 30s
+      timeout: 30s
+      retries: 5
+      start_period: 60s
+    restart: unless-stopped
+
+  searxng-persist:
+    container_name: searxng-persist
+    image: docker.io/searxng/searxng:latest
+    ports:
+      - "4001:8080"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://host.docker.internal:8080"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    environment:
+      - INSTANCE_NAME=searxng
+    restart: unless-stopped
+    volumes:
+      - searxng_data_volume:/data/searxng_data:rw
+      - redis_data:/usr/local/searxng/redis:rw
+      - temp_pdf_data:/data/temp_pdf_data:rw
+      - ./docker/searxng:/etc/searxng:ro
+    depends_on:
+      - redis
+      - nginx
+
+  backup-persist:
+    container_name: backup-persist
+    restart: always
+    image: alpine:latest
+    command: >
+      sh -c "
+        apk add --no-cache rsync &&
+        while true; do
+          rsync -avz /data/searxng_data/ /backup/searxng_data &&
+          rsync -avz /data/temp_pdf_data/ /backup/temp_pdf_data &&
+          rsync -avz /data/app_persist/ /backup/app_persist &&
+          rsync -avz /data/redis_data/ /backup/redis_data &&
+          sleep ${BACKUP_INTERVAL:-3600}
+        done"
+    volumes:
+      - searxng_data_volume:/data/searxng_data:ro # Changed to named volume and read-only
+      - temp_pdf_data:/data/temp_pdf_data:ro
+      - app_persist_data:/data/app_persist:ro # Corrected path
+      - redis_data:/data/redis_data:ro
+      - backup_data_volume:/backup:rw
+    depends_on:
+      - app-persist
+      - redis
+      - searxng-persist
+      - mongo
+    environment:
+      - BACKUP_INTERVAL=3600
+
+  redis:
+    container_name: redis-persist
+    image: redis:latest
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    expose:
+      - 6379
+    command: ["redis-server"]
+    volumes:
+      - redis_data:/data:rw
+    depends_on:
+      - mongo
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:latest
+    container_name: nginx
+    ports:
+      - "80:80"
+    restart: unless-stopped
+    volumes:
+      - ./docker/nginx:/etc/nginx:ro
+    healthcheck:
+      test: [
+        "CMD",
+        "bash", "-c",
+        "'service", "nginx", "status", ">/dev/null", "2>&1;", "echo$?'"
+      ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  ollama:
+    image: ollama/ollama
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    restart: always
+    environment:
+      - OLLAMA_MODELS=/data/ollama_cache
+
+volumes:
+  searxng_data_volume:
+  temp_pdf_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${COMPOSE_PROJECT_DIR:-..}/volumes/temp_pdf_data
+      o: bind
+  mongo_data:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${COMPOSE_PROJECT_DIR:-..}/volumes/mongo_data
+      o: bind
+  app_persist_data:
+  backup_data_volume:
+  redis_data:
