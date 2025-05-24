@@ -35,7 +35,7 @@ Configure your preferred mode by adjusting settings like `use_jina`, `use_ollama
 * Python (>=3.10,<3.13)
 * Docker and Docker Compose (optional, for Docker-based deployment).
 * MongoDB (no manual setup required if using Docker Compose)
-* Ollama (required for Hybrid/Local modes using local LLMs).
+* **Ollama (required for Hybrid/Local modes using local LLMs)** - **Must run locally, not in Docker**
 
 ### MongoDB Session Persistence
 
@@ -129,7 +129,7 @@ Docker provides a containerized environment with all dependencies pre-configured
 * **Containerized API Endpoint:** Runs the `python -m deep-search-persist` core module as a Docker service, exposing the research API.
 * **Containerized SearXNG Instance:** Includes an optional SearXNG service for local search capabilities.
 * **Containerized Gradio Web UI:** Provides a user-friendly web interface for interacting with the researcher.
-* **Support for GPU Acceleration:** Configurable support for NVIDIA and AMD GPUs to accelerate local model inference.
+* **Local Ollama Integration:** Connects to Ollama running on the host machine (not in Docker).
 * **MongoDB-backed Persistent Research Sessions:** All session data is persisted in MongoDB, allowing research tasks to be interrupted, resumed, or rolled back.
 * **External Configuration:** The primary configuration is managed via a mounted `research.toml` file from the project root.
 
@@ -158,10 +158,25 @@ Key sections in `research.toml` relevant to Docker users include:
 2. Configure `research.toml`:
    Locate and edit the `research.toml` file in the project root. Configure it according to your desired operation mode and service setup.
 
-3. Local Model/Tooling Setup (Conditional):
-   * If `use_ollama = true` in `research.toml`:
-     * Ensure Ollama is installed and running on your host machine.
-     * Pull the required models using the Ollama CLI on your host.
+3. **Ollama Setup (Required for Local AI):**
+   **Important**: Ollama must run locally on your host machine, not in Docker.
+   
+   ```bash
+   # Install Ollama (if not already installed)
+   # Visit https://ollama.ai/download or use package manager
+   
+   # Start Ollama server
+   ollama serve
+   
+   # Or use custom port (update OLLAMA_PORT in docker/.env accordingly)
+   OLLAMA_HOST=0.0.0.0:11434 ollama serve
+   
+   # Pull required models
+   ollama pull qwen3:14b
+   ollama pull phi4-reasoning
+   ```
+   
+   The system expects Ollama on `http://localhost:11434` by default (configurable via `OLLAMA_BASE_URL` in `docker/.env`).
 
 4. Build and Start Services:
 
@@ -219,10 +234,25 @@ cd ..
 
 Access the UI in your browser, typically at `http://localhost:7860`.
 
+### Web UI Features
+
+The Gradio interface includes three main tabs:
+
+1. **Research Tab**: Core research functionality with streaming responses
+2. **Session Management Tab**: View, manage, and delete saved research sessions
+3. **System Status Tab**: Monitor Docker containers and Ollama server status
+   - Real-time status monitoring with visual indicators (✅/❌/⚠️)
+   - Docker container health checking
+   - Ollama server connectivity and model availability
+   - Terminal launch button (when Ollama is not running)
+   - Configurable terminal commands via `research.toml`
+
 ### Interacting with the UI
 
 * **New Research:** Input your query, select models, and adjust parameters.
 * **Resuming Sessions:** If the API server has persistence enabled, you can input a `session_id` to resume a previous research task. Session files are typically stored in `simple-webui/logs/sessions/`.
+* **System Monitoring:** Use the System Status tab to check if all services are running properly, especially Ollama.
+* **Terminal Launch:** If Ollama is not running, click the terminal launch button to open a configured terminal session.
 
 ## Using the API
 
@@ -365,7 +395,7 @@ pytest deep-search-persist/tests/
 * **Python Environment:** Verify all dependencies from `requirements-persist.txt` (and `simple-webui/requirements.txt` for UI) are installed. Consider using a virtual environment.
 * **API Server Not Running:** The Web UI needs the `deep-search-persist` API server to be running in the background. Start the API server first before launching the UI.
 * **Session Resumption Fails:** Check if the session ID is correct and the corresponding session file exists in `simple-webui/logs/sessions/`. Ensure file permissions allow the application to read the file.
-* **Ollama Issues:** If using local models via Ollama, ensure the Ollama service is running and the specified models in `research.toml` are pulled and available.
+* **Ollama Issues:** If using local models via Ollama, ensure the Ollama service is running **on your host machine** (not in Docker) and the specified models in `research.toml` are pulled and available. Use the System Status tab in the Web UI to check Ollama connectivity.
 * **Rate Limits:** If using online APIs (like OpenRouter or Jina), you might encounter rate limits. Configure `request_per_minute` and `fallback_model` in `research.toml` if needed, or consider using local alternatives.
 * **SearXNG Issues:** If using a self-hosted SearXNG instance, ensure it is running and accessible from where the `deep-search-persist` API is running. Verify the `searxng_url` in `research.toml`.
 

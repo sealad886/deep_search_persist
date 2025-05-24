@@ -48,7 +48,8 @@ RUN playwright install-deps chromium && \
 RUN playwright install chromium
 
 # Create necessary directories
-RUN mkdir -p /app/temp_pdf_data /app/simple-webui/logs/sessions
+RUN mkdir -p /app/temp_pdf_data /app/simple-webui/logs/sessions /app/simple-webui/imgs
+COPY ../app_logo.jpg simple-webui/imgs/app_logo.jpg
 
 # Copy Python application and its dependencies from pybuilder stage
 COPY --from=pybuilder /python_deps /usr/local/

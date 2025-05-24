@@ -15,12 +15,12 @@ def main():
     FastAPI_HOST = "0.0.0.0"
     FastAPI_PORT = 8000
 
-    print(
-        "Set the address shown below to a chat client as an OpenAI "
-        "completion endpoint, or launch the Gradio interface "
-        "in simple_webui folder."
-    )
-    print(f"Service will be running on:   " f"\033[1mhttp://{FastAPI_HOST}\033[0m:\033[1m{FastAPI_PORT}/v1\033[0m")
+    # print(
+    #     "Set the address shown below to a chat client as an OpenAI "
+    #     "completion endpoint, or launch the Gradio interface "
+    #     "in simple_webui folder."
+    # )
+    # print(f"Service will be running on:   " f"\033[1mhttp://{FastAPI_HOST}\033[0m:\033[1m{FastAPI_PORT}/v1\033[0m")
 
     uvicorn.run(app, host=FastAPI_HOST, port=FastAPI_PORT)
 

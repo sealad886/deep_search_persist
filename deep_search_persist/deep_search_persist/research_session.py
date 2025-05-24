@@ -3,13 +3,14 @@ import json
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-from pydantic import BaseModel, Field
+from bson import ObjectId
+from pydantic import BaseModel, Field, ConfigDict
 
 from .helper_classes import Messages
 
 
 class ResearchSession(BaseModel):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
     session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     start_time: str = Field(default_factory=lambda: datetime.datetime.now().isoformat())
     end_time: Optional[str] = None
@@ -27,7 +28,8 @@ class ResearchSession(BaseModel):
         }
     )
     chat_history: Messages = Field(default_factory=Messages)
-
+    mongo_object_id: Optional[ObjectId] = None
+    
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Serialize chat_history to a list of dicts for Mongo
@@ -102,6 +104,8 @@ class ResearchSession(BaseModel):
                     "last_completed_iteration": -1,
                 },
             )
+            session.mongo_object_id = data.get("mongo_object_id")
+
             chat_history_data = data.get("chat_history")
             if chat_history_data is not None:
                 try:

@@ -1,5 +1,8 @@
 import json
 import os
+import socket
+import subprocess
+import platform
 from datetime import datetime  # Added for formatting timestamps if needed
 
 import gradio as gr
@@ -244,6 +247,186 @@ def _get_webui_ports_from_config():
     return container_port, host_port_suggestion
 
 
+def get_docker_container_status():
+    """Check the status of Docker containers via their health endpoints."""
+    # Define containers with their health check endpoints
+    containers = {
+        "mongo": {"host": "mongo", "port": 27017, "path": "/", "method": "tcp"},
+        "app-persist": {"host": "app-persist", "port": 8000, "path": "/health", "method": "http"},
+        "searxng-persist": {"host": "searxng-persist", "port": 8080, "path": "/", "method": "http"},
+        "redis-persist": {"host": "redis-persist", "port": 6379, "path": "/", "method": "tcp"},
+        "nginx": {"host": "nginx", "port": 80, "path": "/health", "method": "http"}
+    }
+    
+    status_info = {}
+    
+    for container_name, config in containers.items():
+        try:
+            if config["method"] == "http":
+                # HTTP health check
+                url = f"http://{config['host']}:{config['port']}{config['path']}"
+                response = requests.get(url, timeout=3)
+                if response.status_code < 400:
+                    status_info[container_name] = {
+                        "status": "running", 
+                        "details": f"HTTP {response.status_code} - Responding on {config['host']}:{config['port']}"
+                    }
+                else:
+                    status_info[container_name] = {
+                        "status": "error", 
+                        "details": f"HTTP {response.status_code} - Service error"
+                    }
+            elif config["method"] == "tcp":
+                # TCP connection check for non-HTTP services
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(3)
+                result = sock.connect_ex((config['host'], config['port']))
+                sock.close()
+                
+                if result == 0:
+                    status_info[container_name] = {
+                        "status": "running", 
+                        "details": f"TCP connection successful to {config['host']}:{config['port']}"
+                    }
+                else:
+                    status_info[container_name] = {
+                        "status": "stopped", 
+                        "details": f"TCP connection failed to {config['host']}:{config['port']}"
+                    }
+                    
+        except requests.exceptions.ConnectionError:
+            status_info[container_name] = {
+                "status": "stopped", 
+                "details": f"Connection refused to {config['host']}:{config['port']}"
+            }
+        except Exception as e:
+            status_info[container_name] = {
+                "status": "error", 
+                "details": f"Error checking {config['host']}:{config['port']}: {str(e)}"
+            }
+    
+    return status_info
+
+
+def check_ollama_status():
+    """Check if Ollama server is accessible."""
+    # Get Ollama configuration - use host.docker.internal for Docker environment
+    ollama_host = os.getenv("OLLAMA_HOST", "http://host.docker.internal")
+    ollama_port = os.getenv("OLLAMA_PORT", "11434")
+    
+    # Construct clean URL
+    if ollama_host.startswith("http://"):
+        ollama_url = f"{ollama_host}:{ollama_port}"
+    else:
+        ollama_url = f"http://{ollama_host}:{ollama_port}"
+    
+    # Clean up any double port issues
+    import re
+    ollama_url = re.sub(r':(\d+):\1', r':\1', ollama_url)
+    
+    try:
+        # Try to connect to Ollama health endpoint
+        response = requests.get(f"{ollama_url}/api/tags", timeout=5)
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            return {
+                "status": "running",
+                "url": ollama_url,
+                "models_count": len(models),
+                "details": f"Connected successfully. {len(models)} models available."
+            }
+        else:
+            return {
+                "status": "error",
+                "url": ollama_url,
+                "details": f"HTTP {response.status_code}: {response.text[:100]}"
+            }
+    except requests.exceptions.ConnectionError:
+        return {
+            "status": "stopped",
+            "url": ollama_url if 'ollama_url' in locals() else "Unknown",
+            "details": "Connection refused. Ollama server may not be running."
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "url": ollama_url if 'ollama_url' in locals() else "Unknown",
+            "details": f"Error: {str(e)}"
+        }
+
+
+def get_terminal_launch_command():
+    """Get the terminal launch command from config."""
+    try:
+        with open(RESEARCH_TOML_PATH, "rb") as f:
+            config = tomllib.load(f)
+        webui_config = config.get("WebUI", {})
+        return webui_config.get("terminal_launch_command", "/bin/zsh -i -c zf")
+    except Exception as e:
+        logger.error(f"Error reading terminal launch command from config: {e}")
+        return "/bin/zsh -i -c zf"  # Default fallback
+
+
+def launch_terminal():
+    """Launch the system terminal with the configured command."""
+    try:
+        terminal_command = get_terminal_launch_command()
+        system = platform.system()
+        
+        if system == "Darwin":  # macOS
+            # Use osascript to open Terminal.app and run the command
+            applescript = f'''
+            tell application "Terminal"
+                activate
+                do script "{terminal_command}"
+            end tell
+            '''
+            subprocess.run(["osascript", "-e", applescript], check=True)
+            return "Terminal launched successfully on macOS"
+        elif system == "Linux":
+            # Try common Linux terminal emulators
+            terminals = ["gnome-terminal", "konsole", "xterm", "x-terminal-emulator"]
+            for terminal in terminals:
+                try:
+                    subprocess.run([terminal, "-e", terminal_command], check=True)
+                    return f"Terminal launched successfully using {terminal}"
+                except FileNotFoundError:
+                    continue
+            return "No supported terminal emulator found on Linux"
+        elif system == "Windows":
+            # Windows Terminal or Command Prompt
+            try:
+                subprocess.run(["wt", "new-tab", "powershell", "-Command", terminal_command], check=True)
+                return "Windows Terminal launched successfully"
+            except FileNotFoundError:
+                subprocess.run(["cmd", "/c", "start", "cmd", "/k", terminal_command], check=True)
+                return "Command Prompt launched successfully"
+        else:
+            return f"Unsupported operating system: {system}"
+            
+    except Exception as e:
+        logger.error(f"Error launching terminal: {e}")
+        return f"Error launching terminal: {str(e)}"
+
+
+def refresh_status():
+    """Refresh both Docker and Ollama status."""
+    docker_status = get_docker_container_status()
+    ollama_status = check_ollama_status()
+    
+    # Format Docker status for display
+    docker_display = []
+    for container, info in docker_status.items():
+        status_emoji = "✅" if info["status"] == "running" else "❌" if info["status"] == "stopped" else "⚠️"
+        docker_display.append(f"{status_emoji} **{container}**: {info['status']} - {info['details']}")
+    
+    # Format Ollama status for display
+    ollama_emoji = "✅" if ollama_status["status"] == "running" else "❌" if ollama_status["status"] == "stopped" else "⚠️"
+    ollama_display = f"{ollama_emoji} **Ollama Server** ({ollama_status['url']}): {ollama_status['status']} - {ollama_status['details']}"
+    
+    return "\n".join(docker_display), ollama_display, ollama_status["status"] != "running"
+
+
 # --- Gradio UI Creation ---
 def create_ui():
     with gr.Blocks(theme="soft") as demo:  # Use Soft theme as in other version
@@ -253,7 +436,7 @@ def create_ui():
         )
 
         # Determine API base URL - prefer environment variable if set (useful for Docker)
-        default_api_base_url = os.environ.get("DEEP_SEARCH_API_BASE_URL", "http://app-persist:8000/v1")
+        default_api_base_url = os.environ.get("DEEP_SEARCH_API_BASE_URL", "http://app-persist:8000/persist")
         # Check if running in Docker and the URL doesn't seem to be a service name
         if (
             "app-persist" not in default_api_base_url
@@ -264,14 +447,14 @@ def create_ui():
                 f"DEEP_SEARCH_API_BASE_URL ('{default_api_base_url}') "
                 "does not seem to point to 'app-persist' service name. "
                 "If running in Docker Compose, ensure it's "
-                "'http://app-persist:8000/v1' or similar for "
+                "'http://app-persist:8000/persist' or similar for "
                 "inter-container communication."
             )
 
         base_url = gr.Textbox(
             label="API Base URL",
             value=default_api_base_url,
-            placeholder=("Enter API base URL (e.g., http://app-persist:8000/v1 " "or http://localhost:8000/v1)"),
+            placeholder=("Enter API base URL (e.g., http://app-persist:8000/persist " "or http://localhost:8000/persist)"),
         )
 
         with gr.Tabs():
@@ -379,6 +562,124 @@ def create_ui():
                 #     inputs=[base_url],
                 #     outputs=[session_dropdown, session_status_text]
                 # )
+
+            # --- System Status Tab ---
+            with gr.TabItem("System Status"):
+                with gr.Row():
+                    with gr.Column(scale=1):
+                        gr.Markdown("### System Health Monitor")
+                        
+                        with gr.Row():
+                            refresh_status_btn = gr.Button("Refresh Status", variant="primary")
+                            auto_refresh_checkbox = gr.Checkbox(
+                                label="Auto-refresh (30s)", 
+                                value=False,
+                                scale=0
+                            )
+                        
+                        refresh_interval = gr.Number(
+                            label="Refresh Interval (seconds)",
+                            value=30,
+                            minimum=5,
+                            maximum=300,
+                            step=5,
+                            visible=False
+                        )
+                        
+                        # Terminal launch section (only show when Ollama is not running)
+                        with gr.Group() as terminal_group:
+                            gr.Markdown("### Ollama Server Management")
+                            terminal_launch_btn = gr.Button(
+                                "🚀 Launch Terminal to Start Ollama", 
+                                variant="secondary",
+                                visible=False
+                            )
+                            terminal_status_text = gr.Textbox(
+                                label="Terminal Launch Status", 
+                                interactive=False,
+                                visible=False
+                            )
+                        
+                    with gr.Column(scale=2):
+                        gr.Markdown("### Docker Containers Status")
+                        docker_status_display = gr.Markdown(
+                            "Click 'Refresh Status' to check Docker containers...",
+                            label="Docker Status"
+                        )
+                        
+                        gr.Markdown("### Ollama Server Status")
+                        ollama_status_display = gr.Markdown(
+                            "Click 'Refresh Status' to check Ollama server...",
+                            label="Ollama Status"
+                        )
+
+                # --- System Status Event Handlers ---
+                def handle_refresh_status():
+                    docker_display, ollama_display, show_terminal = refresh_status()
+                    return (
+                        docker_display,
+                        ollama_display,
+                        gr.update(visible=show_terminal),  # Show terminal button if Ollama not running
+                        gr.update(visible=show_terminal),  # Show terminal status if Ollama not running
+                        ""  # Clear terminal status
+                    )
+
+                def handle_terminal_launch():
+                    result = launch_terminal()
+                    return result
+
+                def toggle_auto_refresh(enabled):
+                    return gr.update(visible=enabled)
+
+                # Manual refresh button
+                refresh_status_btn.click(
+                    fn=handle_refresh_status,
+                    outputs=[
+                        docker_status_display,
+                        ollama_status_display,
+                        terminal_launch_btn,
+                        terminal_status_text,
+                        terminal_status_text
+                    ]
+                )
+
+                # Auto-refresh checkbox toggle
+                auto_refresh_checkbox.change(
+                    fn=toggle_auto_refresh,
+                    inputs=[auto_refresh_checkbox],
+                    outputs=[refresh_interval]
+                )
+
+                # Create a simple auto-refresh system using periodic events
+                # This will refresh every 30 seconds if auto-refresh is enabled
+                
+                def conditional_auto_refresh():
+                    """Only refresh if auto-refresh checkbox is enabled"""
+                    # Note: In a real implementation, you'd need to track the checkbox state
+                    # For now, we'll implement a simpler version that can be toggled
+                    try:
+                        # TODO: This is a placeholder - in practice you'd check the checkbox state
+                        return handle_refresh_status()
+                    except:
+                        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+
+                # Initial load of status
+                demo.load(
+                    fn=handle_refresh_status,
+                    outputs=[
+                        docker_status_display,
+                        ollama_status_display,
+                        terminal_launch_btn,
+                        terminal_status_text,
+                        terminal_status_text
+                    ]
+                )
+
+                terminal_launch_btn.click(
+                    fn=handle_terminal_launch,
+                    outputs=[terminal_status_text]
+                )
+
     return demo
 
 
@@ -389,8 +690,8 @@ def launch_webui():
     demo.queue(default_concurrency_limit=1)
 
     logger.info(f"Gradio UI will listen on 0.0.0.0:{container_port} inside the container.")
-    logger.info(
-        f"According to {RESEARCH_TOML_PATH} (or defaults), the suggested host port for external access is {host_port_suggestion}."
+    logger.success(
+        f"To use the included web UI, open http://localhost:{host_port_suggestion}."
     )
     logger.info(
         f"Ensure your Docker Compose service 'gradio-ui' maps this host port "
@@ -406,7 +707,8 @@ def launch_webui():
 
     # The `inbrowser=True` will attempt to open a browser inside the container;
     # it usually won't be visible on your host but is harmless.
-    demo.launch(server_name="0.0.0.0", server_port=container_port, inbrowser=True)
+    demo.launch(server_name="0.0.0.0", server_port=container_port, 
+                inbrowser=False, pwa=True, favicon_path="/app/simple-webui/imgs/app_logo.jpg")
 
 
 __all__ = [

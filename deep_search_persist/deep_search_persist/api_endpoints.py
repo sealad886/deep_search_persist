@@ -28,12 +28,24 @@ from .logging.logging_config import LogContext
 from .persistence.session_persistence import SessionPersistenceManager
 from .research_session import ResearchSession
 
-app = FastAPI(title="Deep Researcher API with Persistence", root_path="/v1")
+app = FastAPI(
+    title="Deep Researcher API with Persistence",
+    summary="Use AI to refine an iterative search on a topic of your choice, then generate a detailed report.",
+    version="0.1.0",
+    docs="/docs",
+    redoc_url="/redoc",
+    terms_of_service="",
+    contact={"email": "dev@andrewcox.doctor"},
+    license="GPL-3.0-or-later",
+    license_url="https://www.gnu.org/licenses/gpl-3.0.en.html",
+)
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongo:27017/deep_search")
 persistence = SessionPersistenceManager(MONGO_URI)
 
 
 @app.get("/")
+@app.get("/health", name="health")
+@app.get("/healthcheck", name="healthcheck")
 async def health_check():
     logger.debug("Healthcheck endpoint called")
     jsonresponse = JSONResponse(content={"status": "ok"}, status_code=200)
@@ -58,7 +70,7 @@ def transform_chat_completion_request(raw_body: dict) -> ChatCompletionRequest:
     return ChatCompletionRequest(**body)
 
 
-@app.post("/chat/completions")
+@app.post("/v1/chat/completions")
 async def chat_completions(request: Request):
     """
     Handles chat completion requests by initiating a research session and streaming results.
@@ -348,6 +360,7 @@ async def chat_completions(request: Request):
 
 
 @app.get("/models")
+@app.get("/v1/models")
 async def list_models():
     """List the available models"""
     return ModelList(

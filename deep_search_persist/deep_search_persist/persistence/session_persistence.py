@@ -61,13 +61,23 @@ class SessionSummaryList(BaseModel):
     _start_time: Optional[datetime] = None  # The datetime of the first SessionSummary in the SessionSummaryList
     _end_time: Optional[datetime] = None  # The datetime of the last SessionSummary in the SessionSummaryList
 
-    def __getattribute__(self, name: str) -> Any: ...
-    def __deepcopy__(self, memo: Optional[Dict[int, Any]] = None) -> Self: ...
+    def __getattribute__(self, name: str) -> Any:
+        return super().__getattribute__(name)
+    
+    def __deepcopy__(self, memo: Optional[Dict[int, Any]] = None) -> Self:
+        import copy
+        return copy.deepcopy(self, memo)
+    
     def __copy__(self) -> Self:
         return self.__deepcopy__()
 
-    def __eq__(self, value: object) -> bool: ...
-    def __setattr__(self, name: str, value: Any) -> None: ...
+    def __eq__(self, value: object) -> bool:
+        if not isinstance(value, SessionSummaryList):
+            return False
+        return self.sessions == value.sessions
+    
+    def __setattr__(self, name: str, value: Any) -> None:
+        super().__setattr__(name, value)
 
     def __func_datetime(
         self, internal_param_name: Literal["_start_time", "_end_time"], func: Callable
@@ -76,16 +86,18 @@ class SessionSummaryList(BaseModel):
             logger.critical("Development bug. Please report.")
             raise DatetimeException()
 
-        if hasattr(self, internal_param_name) and self.get(internal_param_name):
-            return self.get(internal_param_name)
+        # Use getattr instead of self.get() since BaseModel doesn't have get() method
+        current_value = getattr(self, internal_param_name, None)
+        if current_value:
+            return current_value
         elif self.sessions and isinstance(self.sessions, List) and len(self.sessions) > 0:
-            self.__setattr__(
-                name=internal_param_name,
-                value=(func(s.created_at for s in self.sessions if s.created_at) if self.sessions else None),
-            )
-            if self.get(internal_param_name):
-                return self.get(internal_param_name)
-        return
+            # Calculate the datetime value using the provided function
+            datetime_values = [s.created_at for s in self.sessions if s.created_at]
+            if datetime_values:
+                calculated_value = func(datetime_values)
+                setattr(self, internal_param_name, calculated_value)
+                return calculated_value
+        return None
 
     @property
     def start_time(self) -> Optional[datetime]:
@@ -246,6 +258,11 @@ class SessionPersistenceManager:
             utc_now = datetime.now(timezone.utc)
 
             session_id_val = getattr(session, "session_id", None)
+            session_obj_id = getattr(session, "mongo_object_id", None)
+            # Ensure mongo_object_id is a BSON ObjectId, create new if missing or incorrect type
+            if not isinstance(session_obj_id, ObjectId):
+                session_obj_id = ObjectId()
+                session.mongo_object_id = session_obj_id
             session_data = session.dict() if hasattr(session, "dict") else dict(session)
             status_val = getattr(session, "status", SessionStatuses.ERROR.value)
             if isinstance(status_val, SessionStatuses):
@@ -262,7 +279,8 @@ class SessionPersistenceManager:
                         "Saving a new session",
                         user_id=getattr(session, "user_id", None),
                     )
-                    doc = {
+                    doc: Dict[str, Any] = {
+                        "_id": session_obj_id,
                         "user_id": getattr(session, "user_id", None),
                         "created_at": to_iso(utc_now),
                         "updated_at": to_iso(utc_now),
@@ -275,7 +293,7 @@ class SessionPersistenceManager:
                     }
                     db_response = await self.session_collection.insert_one(doc)
                     saved_session_id_obj = db_response.inserted_id
-                    saved_session_id_str = str(saved_session_id_obj)
+                    saved_session_id_str = str(session_obj_id)
                     session.session_id = saved_session_id_str  # Update the passed-in session object
                     logger.debug("New session created", session_id=saved_session_id_str)
 
@@ -283,7 +301,7 @@ class SessionPersistenceManager:
                     hash_val = hashlib.sha256(session_data_str.encode()).hexdigest()
                     await self.validation_hashes_collection.insert_one(
                         {
-                            "session_id": saved_session_id_obj,  # Use ObjectId
+                            "session_id": session_obj_id,  # Use ObjectId
                             "session_hash": hash_val,
                         }
                     )
@@ -293,7 +311,7 @@ class SessionPersistenceManager:
                     )
                 else:
                     # Existing session
-                    saved_session_id_str = str(session_id_val)  # session_id_val is already a string or None
+                    saved_session_id_str = str(session_obj_id)
                     logger.info("Updating session", session_id=saved_session_id_str)
                     update_doc = {
                         "status": status_val,
@@ -308,14 +326,14 @@ class SessionPersistenceManager:
                         "data": session_data,
                     }
                     await self.session_collection.update_one(
-                        {"_id": ObjectId(session_id_val)},  # Convert string ID to ObjectId for query
+                        {"_id": session_obj_id},
                         {"$set": update_doc, "$push": {"history": history_entry}},
                     )
                     # Update validation hash for existing session
                     session_data_str = json.dumps(clean_dict(session_data), sort_keys=True)
                     hash_val = hashlib.sha256(session_data_str.encode()).hexdigest()
                     await self.validation_hashes_collection.update_one(
-                        {"session_id": ObjectId(session_id_val)},  # Use ObjectId
+                        {"session_id": session_obj_id},
                         {"$set": {"session_hash": hash_val}},
                         upsert=True,
                     )

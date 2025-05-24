@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 import tomllib
 from loguru import logger
 
-from .logging.logging_config import LogContext
+from .logging.logging_config import LogContext, log_operation
 
 # Initialize configuration globals
 CONFIG_FILE_PATH = (
@@ -21,6 +21,7 @@ CONFIG_FILE_PATH = (
 config_data: Dict[str, Dict[str, Any]] = {}
 
 
+@log_operation("load_config", level="DEBUG")
 def load_config() -> None:
     """Load configuration from TOML file."""
     global config_data
@@ -56,6 +57,7 @@ def load_config() -> None:
         config_data = {}
 
 
+@log_operation("get_config_value", level="DEBUG")
 def get_config_value(section: str, key: str, default: Any = None, value_type: Any = str) -> Any:
     """Get a configuration value with type conversion and validation.
 
@@ -68,76 +70,75 @@ def get_config_value(section: str, key: str, default: Any = None, value_type: An
     Returns:
         The configuration value converted to the specified type
     """
-    with LogContext("get_config_value", section=section, key=key):
-        # Ensure config is loaded
-        if not config_data:
-            load_config()
+    # Ensure config is loaded
+    if not config_data:
+        load_config()
 
-        # Convert string type hints to actual types
-        if isinstance(value_type, str):
-            try:
-                value_type = eval(value_type)
-            except Exception as e:
-                logger.error("Invalid value_type string", value_type=value_type, error=str(e))
-                value_type = str
-
-        # If no type provided, default to str
-        if value_type is None:
+    # Convert string type hints to actual types
+    if isinstance(value_type, str):
+        try:
+            value_type = eval(value_type)
+        except Exception as e:
+            logger.error("Invalid value_type string", value_type=value_type, error=str(e))
             value_type = str
 
-        try:
-            # Get value from config or use default
-            value = config_data.get(section, {}).get(key)
+    # If no type provided, default to str
+    if value_type is None:
+        value_type = str
 
-            if value is None and default is None:
-                logger.warning("Missing mandatory configuration key", section=section, key=key)
-                raise KeyError(f"Mandatory key '{key}' not found in section '{section}'")
+    try:
+        # Get value from config or use default
+        value = config_data.get(section, {}).get(key)
 
-            if value is None:
-                logger.info(
-                    "Using default configuration value",
+        if value is None and default is None:
+            logger.warning("Missing mandatory configuration key", section=section, key=key)
+            raise KeyError(f"Mandatory key '{key}' not found in section '{section}'")
+
+        if value is None:
+            logger.info(
+                "Using default configuration value",
+                section=section,
+                key=key,
+                default=default,
+            )
+            return default
+
+        # Type conversion
+        if value_type == bool and isinstance(value, str):
+            result = value.lower() in ("true", "yes", "1", "on")
+            logger.debug("Converted string to boolean", value=value, result=result)
+            return result
+        elif value_type in (int, float, str):
+            try:
+                result = value_type(value)
+                logger.debug(
+                    "Converted value to type",
+                    value=value,
+                    type=value_type.__name__,
+                    result=result,
+                )
+                return result
+            except (ValueError, TypeError) as e:
+                logger.error(
+                    "Type conversion failed",
                     section=section,
                     key=key,
-                    default=default,
+                    value=value,
+                    target_type=value_type.__name__,
+                    error=str(e),
                 )
                 return default
 
-            # Type conversion
-            if value_type == bool and isinstance(value, str):
-                result = value.lower() in ("true", "yes", "1", "on")
-                logger.debug("Converted string to boolean", value=value, result=result)
-                return result
-            elif value_type in (int, float, str):
-                try:
-                    result = value_type(value)
-                    logger.debug(
-                        "Converted value to type",
-                        value=value,
-                        type=value_type.__name__,
-                        result=result,
-                    )
-                    return result
-                except (ValueError, TypeError) as e:
-                    logger.error(
-                        "Type conversion failed",
-                        section=section,
-                        key=key,
-                        value=value,
-                        target_type=value_type.__name__,
-                        error=str(e),
-                    )
-                    return default
+        return value
 
-            return value
-
-        except Exception as e:
-            logger.exception(
-                "Error retrieving configuration value",
-                section=section,
-                key=key,
-                error=str(e),
-            )
-            return default
+    except Exception as e:
+        logger.exception(
+            "Error retrieving configuration value",
+            section=section,
+            key=key,
+            error=str(e),
+        )
+        return default
 
 
 # Initial configuration load
@@ -161,7 +162,7 @@ REASON_MODEL_CTX = get_config_value("LocalAI", "reason_model_ctx", -1, value_typ
 DEFAULT_MODEL = get_config_value("LocalAI", "default_model", "llama2:latest")
 REASON_MODEL = get_config_value("LocalAI", "reason_model", "llama2:latest")
 
-logger.debug(
+logger.success(
     "Local AI settings configured",
     ollama_url=OLLAMA_BASE_URL,
     default_ctx=DEFAULT_MODEL_CTX,
@@ -179,7 +180,7 @@ OPENAI_URL = get_config_value("API", "openai_url", "https://api.openai.com/v1")
 JINA_BASE_URL = get_config_value("API", "jina_base_url", "https://api.jina.ai/v1/chat/completions")
 BASE_SEARXNG_URL = get_config_value("API", "searxng_url", "http://localhost:8080")
 
-logger.debug(
+logger.success(
     "API endpoints configured",
     openai_url=OPENAI_URL,
     jina_url=JINA_BASE_URL,
@@ -193,7 +194,7 @@ USE_OLLAMA = get_config_value("Settings", "use_ollama", True, value_type=bool)
 USE_JINA = get_config_value("Settings", "use_jina", False, value_type=bool)
 WITH_PLANNING = get_config_value("Settings", "with_planning", True, value_type=bool)
 
-logger.debug(
+logger.success(
     "General settings configured",
     use_ollama=USE_OLLAMA,
     use_jina=USE_JINA,
@@ -209,7 +210,7 @@ CHROME_PORT = get_config_value("Concurrency", "chrome_port", 9222, value_type=in
 CHROME_HOST_IP = get_config_value("Concurrency", "chrome_host_ip", "127.0.0.1")
 USE_EMBED_BROWSER = get_config_value("Concurrency", "use_embed_browser", True, value_type=bool)
 
-logger.debug(
+logger.success(
     "Concurrency settings configured",
     concurrent_limit=CONCURRENT_LIMIT,
     cool_down=COOL_DOWN,
@@ -231,7 +232,7 @@ MAX_EVAL_TIME = get_config_value("Parsing", "max_eval_time", 30, value_type=int)
 VERBOSE_WEB_PARSE = get_config_value("Parsing", "verbose_web_parse", False, value_type=bool)
 BROWSE_LITE = get_config_value("Parsing", "browse_lite", 1, value_type=int)  # 0 for full parsing, 1 for lite parsing
 
-logger.debug(
+logger.success(
     "Parsing settings configured",
     pdf_max_pages=PDF_MAX_PAGES,
     pdf_max_filesize=PDF_MAX_FILESIZE,
@@ -260,7 +261,7 @@ FALLBACK_MODEL = get_config_value(
     "Ratelimits", "fallback_model", DEFAULT_MODEL
 )  # Use default model if no fallback specified
 
-logger.debug(
+logger.success(
     "Rate limit settings configured",
     requests_per_minute=REQUEST_PER_MINUTE,
     wait_time=OPERATION_WAIT_TIME,
@@ -270,4 +271,4 @@ logger.debug(
 # Rate limiting for OpenRouter/OpenAI compatible API
 openrouter_last_request_times: list[float] = []
 
-logger.info("Configuration module initialized successfully")
+logger.success("Configuration module initialized successfully")

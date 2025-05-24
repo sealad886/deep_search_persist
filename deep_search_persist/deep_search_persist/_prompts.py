@@ -1,15 +1,21 @@
 import re
 from typing import Optional
 
-from typing_extensions import LiteralString
 
+class Prompt(str):
+    __slots__ = ("raw",)
+    raw: Optional[str]
 
-class Prompt(LiteralString):
-    raw: str
+    def __new__(cls, raw: str):
+ # Create the string value from the raw input
+        obj = super().__new__(cls, raw)
+        # Store the original prompt
+        obj.raw = raw
+        return obj
 
     def __init__(self, raw: str):
-        super().__init__()
-        self.raw = raw
+        # raw is already set in __new__; no additional initialization needed
+        pass
 
     def __repr__(self) -> str:
         return self.clean_prompt(prompt=(self.raw if hasattr(self, "raw") else ""))
@@ -21,7 +27,7 @@ class Prompt(LiteralString):
         return len(self.__str__())
 
     @classmethod
-    def clean_prompt(cls, prompt: str) -> str:
+    def clean_prompt(cls, prompt: Optional[str] = None) -> str:
         """
         Cleans a prompt string by:
         1. Normalizing newline characters (\\r\\n, \\r -> \\n).

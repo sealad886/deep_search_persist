@@ -2,6 +2,8 @@
 ollama_base_url = "${OLLAMA_BASE_URL}"
 default_model_ctx = 256000
 reason_model_ctx = -1
+default_model = "gemma3:1b"
+reason_model = "gemma3:1b"
 
 [API]
 openai_compat_api_key = "${OPENAI_COMPAT_API_KEY}"
@@ -14,8 +16,7 @@ searxng_url = "http://host.docker.internal:4000/search"
 use_jina = false
 use_ollama = true
 with_planning = true
-default_model = "gemma3:4b"
-reason_model = "qwen3:14b"
+
 
 [Concurrency] # for browser
 concurrent_limit = 3
@@ -38,3 +39,11 @@ verbose_web_parse_detail = true
 request_per_minute = 12
 operation_wait_time = 10
 fallback_model = "llama3.2:3b-instruct-q8_0"
+
+[WebUI]
+# Desired host port for accessing the Gradio UI when running in Docker.
+gradio_host_port = 7860
+# Port the Gradio service listens on *inside* its container.
+gradio_container_port = 7860
+# Terminal command to launch when Ollama is not available (customizable)
+terminal_launch_command = "/bin/zsh -i -c zf"

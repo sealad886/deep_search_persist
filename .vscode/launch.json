@@ -9,7 +9,7 @@
             "name": "Python Debugger: Module",
             "type": "debugpy",
             "request": "launch",
-            "module": "deep_search"
+            "module": "deep-search"
         }
     ]
 }

@@ -1,8 +1,9 @@
 import asyncio
+from dataclasses import dataclass
 import mimetypes
 import time
 from collections import defaultdict
-from typing import AsyncGenerator, DefaultDict, Optional, Union  # Added AsyncGenerator, Union, Optional
+from typing import Any, AsyncGenerator, DefaultDict, LiteralString, Optional, Union  # Added AsyncGenerator, Union, Optional
 from urllib.parse import urlparse
 
 import aiohttp  # Added for type hinting
@@ -10,7 +11,8 @@ import anyio  # Added for anyio.sleep
 from docling.document_converter import DocumentConverter  # type: ignore
 from loguru import logger
 from ollama import AsyncClient
-from playwright.async_api import async_playwright  # type: ignore
+from playwright.async_api import async_playwright
+from pydantic import BaseModel  # type: ignore
 
 from .configuration import (
     BROWSE_LITE,
@@ -39,6 +41,7 @@ from .configuration import (
 )
 from .helper_classes import Message, Messages
 from .logging.logging_config import log_operation
+from .llm_providers import LLMProviderFactory
 
 # Added for test_call_openrouter_rate_limit
 OPERATION_WAIT_TIME = 1
@@ -54,6 +57,16 @@ openrouter_last_request_times: list = []  # Initialize for rate limiting
 pdf_processing_lock = asyncio.Lock()
 
 
+@dataclass
+class OllamaArgs(dict):
+    model: str
+    max_tokens: int = 0
+    ctx: Optional[int] = None
+    
+    def __repr__(self) -> str:
+        return f"<OllamaArgs model={self.model} max_tokens={self.max_tokens} ctx={self.ctx}>"
+
+
 # ----------------------
 # LLM Call Routing
 @log_operation("llm_call", level="DEBUG")
@@ -67,37 +80,36 @@ async def call_llm_async(
 ) -> Union[str, None]:
     """Call the LLM with the provided messages and return the response."""
     try:
+        max_tokens = max_tokens_override if max_tokens_override is not None else 20000
+        
         logger.debug(
             "Initiating LLM call",
             model=model,
             message_count=len(messages),
             use_ollama=USE_OLLAMA,
             force_ollama=force_ollama,
-            max_tokens_override=max_tokens_override,
+            max_tokens=max_tokens,
         )
 
         if force_ollama or USE_OLLAMA:
-            ollama_kwargs = {"model": model, "ctx": ctx}
-            if max_tokens_override is not None:
-                ollama_kwargs["max_tokens"] = max_tokens_override
-
-            # call_ollama_async returns an async generator of parts
-            response_stream = call_ollama_async(session, messages, **ollama_kwargs)
-            response_parts = [part async for part in response_stream]
-            response = "".join(response_parts) if response_parts else None
+            # Use the new Ollama provider
+            provider = LLMProviderFactory.get_ollama_provider()
+            response = await provider.generate(messages, model, max_tokens, ctx)
             logger.debug(
                 "Ollama call completed",
                 model=model,
                 response_length=len(response) if response else 0,
             )
-        elif not USE_OLLAMA and not force_ollama:  # Ensure OpenRouter is only called if not forcing Ollama
-            response = await call_openrouter_async(session, messages, model=model)
+        elif not USE_OLLAMA and not force_ollama:
+            # Use the OpenAI-compatible provider
+            provider = LLMProviderFactory.get_openai_provider()
+            response = await provider.generate(messages, model, max_tokens, ctx, session=session)
             logger.debug(
-                "OpenRouter call completed",
+                "OpenAI-compatible call completed",
                 model=model,
                 response_length=len(response) if response else 0,
             )
-        else:  # This case should ideally not be reached if logic is sound
+        else:
             logger.error(
                 "LLM call routing error",
                 use_ollama=USE_OLLAMA,
@@ -208,6 +220,7 @@ async def call_openrouter_async(
 # --------------------------
 # Local AI and Browser use
 # --------------------------
+# Note: Ollama functionality has been moved to llm_providers.py for better extensibility
 async def call_ollama_async(
     session: aiohttp.ClientSession,  # Added type hint
     messages: Messages,
@@ -245,7 +258,7 @@ async def call_ollama_async(
 
         # client.chat returns an AsyncIterator[ChatResponse]
         # We need to iterate through it and yield the content of each message part
-        async for part in await client.chat(
+        async for part in client.chat(
             model=model,
             messages=ollama_formatted_messages,
             stream=True,

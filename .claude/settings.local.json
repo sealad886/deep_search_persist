@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(ls:*)",
+      "Bash(docker logs:*)",
+      "Bash(docker restart:*)",
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_type",
+      "mcp__playwright__browser_take_screenshot",
+      "Bash(grep:*)",
+      "Bash(docker compose:*)",
+      "mcp__playwright__browser_snapshot",
+      "Bash(curl:*)",
+      "Bash(ollama list:*)"
+    ],
+    "deny": []
+  }
+}
