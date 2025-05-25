@@ -14,7 +14,7 @@ from .logging.logging_config import LogContext, log_operation
 
 # Initialize configuration globals
 CONFIG_FILE_PATH = (
-    Path("/app/research.toml")
+    Path("/app/config/research.toml")
     if os.getenv("DOCKER_CONTAINER")
     else Path(__file__).resolve().parent.parent / "research.toml"
 )

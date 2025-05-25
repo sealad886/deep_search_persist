@@ -1,7 +1,6 @@
 # ============================
 # Asynchronous Helper Functions
 # ============================
-import ast
 import asyncio
 import re
 from typing import Any, AsyncGenerator, Callable, List, Literal, Optional, Union
@@ -21,7 +20,7 @@ from .configuration import (
     VERBOSE_WEB_PARSE,
 )
 from .helper_classes import Message, Messages
-from .local_ai import call_ollama_async, call_openrouter_async, fetch_webpage_text_async, call_llm_async
+from .local_ai import call_ollama_async, call_openrouter_async, fetch_webpage_text_async, call_llm_async, call_llm_async_parse_list
 
 
 @log_operation("make_initial_searching_plan", level="DEBUG")
@@ -201,21 +200,13 @@ async def generate_search_queries_async(session: aiohttp.ClientSession, query_pl
         {"role": "user", "content": f"Research Plan: {query_plan}\n\n{prompt}"},
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    response = await call_llm_async(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
-    if response:
-        try:
-            # Attempt to parse the response as a Python list
-            queries = ast.literal_eval(response)
-            if isinstance(queries, list):
-                logger.debug("Successfully parsed search queries", count=len(queries))
-                return queries
-            else:
-                logger.error("Invalid query response format", response_type=type(response).__name__, response=response)
-                return []
-        except (SyntaxError, ValueError) as e:
-            logger.exception("Failed to parse search queries", error=str(e), response=response)
-            return []
-    return []
+    # Use the new centralized parsing method
+    queries = await call_llm_async_parse_list(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+    if isinstance(queries, list):
+        return queries
+    else:
+        logger.error("Unexpected result from LLM list parsing", result=queries, result_type=type(queries).__name__)
+        return []
 
 
 @log_operation("web_search", level="DEBUG")
@@ -401,27 +392,9 @@ async def get_new_search_queries_async(
         },
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    # Use the generic call_llm_async helper which handles Ollama's async generator
-    # and OpenRouter's direct string return.
-    response = await call_llm_async(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
-
-    if response:
-        if response.strip() == "<done>":
-            return "<done>"
-        try:
-            # Attempt to parse the response as a Python list
-            queries = ast.literal_eval(response)
-            if isinstance(queries, list):
-                return queries
-            else:  # Should not happen if ast.literal_eval succeeds and it's not a list, but good practice
-                logger.error("Parsed response is not a list", response=response)
-                return []
-        except (SyntaxError, ValueError) as e:  # Be specific about exceptions
-            logger.exception("Error parsing search queries from LLM response", error=str(e), response=response)
-            return []  # Return empty list if parsing fails and it wasn't "<done>"
-    else:  # Handle cases where response is None or empty string from LLM
-        logger.warning("LLM returned an empty or None response for new search queries")
-        return []
+    # Use the new centralized parsing method
+    result = await call_llm_async_parse_list(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+    return result  # This will be either a list of strings, "<done>", or empty list
 
 
 @log_operation("generate_final_report", level="DEBUG")

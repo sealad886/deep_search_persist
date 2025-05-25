@@ -54,10 +54,6 @@ COPY ../app_logo.jpg simple-webui/imgs/app_logo.jpg
 # Copy Python application and its dependencies from pybuilder stage
 COPY --from=pybuilder /python_deps /usr/local/
 
-# The application code (deep_search_persist) is now installed in /usr/local/lib/python...
-# Config files like research.toml should be placed in a known location, e.g., /app
-COPY docker/research.toml /app/research.toml
-
 # PYTHONPATH can be useful if the application expects /app in its path for other resources,
 # or if scripts are run from /app. For an installed module, it's not strictly for module discovery.
 ENV PYTHONPATH=/app

@@ -5,8 +5,10 @@ This module provides a extensible interface for different LLM inference engines,
 making it easy to add support for new providers in the future.
 """
 import asyncio
+import ast
+import json
 from abc import ABC, abstractmethod
-from typing import AsyncGenerator, Dict, Any, Optional, List
+from typing import AsyncGenerator, Dict, Any, Optional, List, Union, Literal
 import aiohttp
 from loguru import logger
 from ollama import AsyncClient
@@ -48,6 +50,114 @@ class LLMProvider(ABC):
     ) -> Optional[str]:
         """Generate complete response from the LLM."""
         pass
+    
+    # TODO: This should only be called after streaming is done. Only the completed response can be parsed for Markdown formatting.
+    def clean_markdown_response(self, response: str) -> str:
+        """
+        Clean markdown code blocks from LLM responses.
+        
+        Args:
+            response: Raw response from the LLM
+            
+        Returns:
+            Cleaned response with markdown code blocks removed
+        """
+        if not response:
+            return response
+            
+        cleaned_response = response.strip()
+        if cleaned_response.startswith("```"):
+            # Remove markdown code blocks
+            lines = cleaned_response.split('\n')
+            start_idx = 0
+            end_idx = len(lines)
+            
+            # Find start of actual content (skip ```python or ``` line)
+            for i, line in enumerate(lines):
+                if line.strip().startswith('['):
+                    start_idx = i
+                    break
+            
+            # Find end of actual content (before closing ```)
+            for i in range(len(lines) - 1, -1, -1):
+                if lines[i].strip().endswith(']'):
+                    end_idx = i + 1
+                    break
+                elif lines[i].strip() == '```':
+                    end_idx = i
+                    break
+            
+            cleaned_response = '\n'.join(lines[start_idx:end_idx]).strip()
+        
+        return cleaned_response
+    
+    def parse_python_list(self, response: str) -> Union[List[str], Literal["<done>"], List]:
+        """
+        Parse a Python list from LLM response, handling markdown code blocks.
+        
+        Args:
+            response: Raw response from the LLM
+            
+        Returns:
+            Parsed list, "<done>" token, or empty list on failure
+        """
+        if not response:
+            logger.warning("Empty response received for list parsing")
+            return []
+        
+        cleaned_response = response.strip()
+        
+        # Check for the special "<done>" token first
+        if cleaned_response == "<done>":
+            return "<done>"
+        
+        try:
+            # Clean markdown if present
+            cleaned_response = self.clean_markdown_response(response)
+            
+            # Attempt to parse the response as a Python list
+            parsed = ast.literal_eval(cleaned_response)
+            if isinstance(parsed, list):
+                logger.debug("Successfully parsed Python list", count=len(parsed))
+                return parsed
+            else:
+                logger.error("Parsed response is not a list", response_type=type(parsed).__name__, response=response)
+                return []
+        except (SyntaxError, ValueError) as e:
+            logger.exception("Failed to parse Python list from LLM response", error=str(e), response=response, cleaned_response=cleaned_response)
+            return []
+    
+    async def generate_and_parse_list(
+        self,
+        messages: Messages,
+        model: str,
+        max_tokens: int = 20000,
+        ctx: int = 0,
+        **kwargs
+    ) -> Union[List[str], Literal["<done>"], List]:
+        """
+        Generate response and parse it as a Python list.
+        
+        Args:
+            messages: Messages to send to the LLM
+            model: Model to use
+            max_tokens: Maximum tokens to generate
+            ctx: Context length
+            **kwargs: Additional arguments
+            
+        Returns:
+            Parsed list, "<done>" token, or empty list on failure
+        """
+        try:
+            response = await self.generate(messages, model, max_tokens, ctx, **kwargs)
+            if response:
+                return self.parse_python_list(response)
+            else:
+                logger.warning("LLM returned empty response for list generation")
+                return []
+        except Exception as e:
+            logger.exception("Error in generate_and_parse_list", error=str(e))
+            return []
 
 
 class OllamaProvider(LLMProvider):
@@ -194,7 +304,6 @@ class OpenAICompatibleProvider(LLMProvider):
                     line_str = line.decode('utf-8').strip()
                     if line_str.startswith('data: ') and not line_str.endswith('[DONE]'):
                         try:
-                            import json
                             data = json.loads(line_str[6:])  # Remove 'data: ' prefix
                             if 'choices' in data and data['choices']:
                                 delta = data['choices'][0].get('delta', {})
@@ -251,11 +360,17 @@ class LLMProviderFactory:
         return cls._providers[provider_type]
     
     @classmethod
-    def get_ollama_provider(cls) -> OllamaProvider:
+    def get_ollama_provider(cls) -> "OllamaProvider":
         """Convenience method to get Ollama provider."""
-        return cls.get_provider("ollama")
+        provider = cls.get_provider("ollama")
+        if isinstance(provider, OllamaProvider):
+            return provider
+        raise ValueError("Expected OllamaProvider")
     
     @classmethod
-    def get_openai_provider(cls) -> OpenAICompatibleProvider:
+    def get_openai_provider(cls) -> "OpenAICompatibleProvider":
         """Convenience method to get OpenAI-compatible provider."""
-        return cls.get_provider("openai_compatible")
+        provider = cls.get_provider("openai_compatible")
+        if isinstance(provider, OpenAICompatibleProvider):
+            return provider
+        raise ValueError("Expected OpenAICompatibleProvider")

@@ -379,6 +379,7 @@ engines:
   - name: bing
     engine: bing
     shortcut: bi
+    disabled: false
     disabled: true
 
   - name: bing images
@@ -657,6 +658,7 @@ engines:
   - name: duckduckgo
     engine: duckduckgo
     shortcut: ddg
+    disabled: false
 
   - name: duckduckgo images
     engine: duckduckgo_extra
@@ -845,6 +847,7 @@ engines:
   - name: google
     engine: google
     shortcut: go
+    disabled: false
     # additional_tests:
     #   android: *test_android
 

@@ -192,8 +192,10 @@ volumes/
 !.gitignore
 .veve
 .DS_Store
-**/.env
-!docker/.env
+.env
+# !docker/.env
 logs/
-deep_search_persist/deep_search_persist/research.toml
+deep_search_persist/deep_search_persist/persist-config/research.toml
 archive/
+.claude/
+docs-internal/

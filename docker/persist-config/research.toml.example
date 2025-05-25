@@ -2,8 +2,8 @@
 ollama_base_url = "${OLLAMA_BASE_URL}"
 default_model_ctx = 256000
 reason_model_ctx = -1
-default_model = "gemma3:1b"
-reason_model = "gemma3:1b"
+default_model = "gemma3:12b"
+reason_model = "qwen3:14b"
 
 [API]
 openai_compat_api_key = "${OPENAI_COMPAT_API_KEY}"
@@ -38,7 +38,7 @@ verbose_web_parse_detail = true
 [Ratelimits] # for AI endpoints
 request_per_minute = 12
 operation_wait_time = 10
-fallback_model = "llama3.2:3b-instruct-q8_0"
+fallback_model = "llama3.2:3b"
 
 [WebUI]
 # Desired host port for accessing the Gradio UI when running in Docker.

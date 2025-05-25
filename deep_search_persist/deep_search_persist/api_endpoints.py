@@ -170,7 +170,7 @@ async def chat_completions(request: Request):
                         r"<think>.*?</think>", "", initial_plan_raw, flags=re.DOTALL
                     ).strip()
 
-                max_iterations = research_state.settings.get("max_iterations", 3)
+                max_iterations = research_state.settings.get("max_iterations", 15)
 
                 for iteration in range(max_iterations):
                     iteration_label = f"Iteration {iteration + 1}/{max_iterations}"

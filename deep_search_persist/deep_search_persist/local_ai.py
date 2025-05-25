@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import mimetypes
 import time
 from collections import defaultdict
-from typing import Any, AsyncGenerator, DefaultDict, LiteralString, Optional, Union  # Added AsyncGenerator, Union, Optional
+from typing import Any, AsyncGenerator, DefaultDict, List, Literal, LiteralString, Optional, Union  # Added AsyncGenerator, Union, Optional
 from urllib.parse import urlparse
 
 import aiohttp  # Added for type hinting
@@ -122,6 +122,63 @@ async def call_llm_async(
     except Exception as e:
         logger.exception("LLM call failed", model=model, error=str(e))
         return None
+
+
+@log_operation("llm_call_parse_list", level="DEBUG")
+async def call_llm_async_parse_list(
+    session: aiohttp.ClientSession,
+    messages: Messages,
+    model: str,
+    ctx: int,
+    max_tokens_override: Optional[int] = None,
+    force_ollama: bool = False,
+) -> Union[List[str], Literal["<done>"], List]:
+    """Call the LLM and parse the response as a Python list."""
+    try:
+        max_tokens = max_tokens_override if max_tokens_override is not None else 20000
+        
+        logger.debug(
+            "Initiating LLM call for list parsing",
+            model=model,
+            message_count=len(messages),
+            use_ollama=USE_OLLAMA,
+            force_ollama=force_ollama,
+            max_tokens=max_tokens,
+        )
+
+        if force_ollama or USE_OLLAMA:
+            # Use the new Ollama provider
+            provider = LLMProviderFactory.get_ollama_provider()
+            result = await provider.generate_and_parse_list(messages, model, max_tokens, ctx)
+            logger.debug(
+                "Ollama list parsing completed",
+                model=model,
+                result_type=type(result).__name__,
+                result_length=len(result) if isinstance(result, list) else 1,
+            )
+        elif not USE_OLLAMA and not force_ollama:
+            # Use the OpenAI-compatible provider
+            provider = LLMProviderFactory.get_openai_provider()
+            result = await provider.generate_and_parse_list(messages, model, max_tokens, ctx, session=session)
+            logger.debug(
+                "OpenAI-compatible list parsing completed",
+                model=model,
+                result_type=type(result).__name__,
+                result_length=len(result) if isinstance(result, list) else 1,
+            )
+        else:
+            logger.error(
+                "LLM call routing error",
+                use_ollama=USE_OLLAMA,
+                force_ollama=force_ollama,
+                model=model,
+            )
+            return []
+
+        return result
+    except Exception as e:
+        logger.exception("LLM list parsing call failed", model=model, error=str(e))
+        return []
 
 
 # ----------------------
@@ -258,7 +315,7 @@ async def call_ollama_async(
 
         # client.chat returns an AsyncIterator[ChatResponse]
         # We need to iterate through it and yield the content of each message part
-        async for part in client.chat(
+        async for part in await client.chat(
             model=model,
             messages=ollama_formatted_messages,
             stream=True,

@@ -31,6 +31,7 @@ services:
     volumes:
       - temp_pdf_data:/data/temp_pdf_data:rw
       - app_persist_data:/app/data:rw
+      - config_volume:/app/config:ro
     environment:
       - PYTHONUNBUFFERED=1
       - MONGO_URI=${MONGO_URI}
@@ -74,6 +75,8 @@ services:
       retries: 5
       start_period: 60s
     restart: unless-stopped
+    volumes:
+      - config_volume:/app/config:ro
 
   searxng-persist:
     container_name: searxng-persist
@@ -94,6 +97,7 @@ services:
       - redis_data:/usr/local/searxng/redis:rw
       - temp_pdf_data:/data/temp_pdf_data:rw
       - ./searxng:/etc/searxng:ro
+      - config_volume:/app/config:ro
     depends_on:
       - redis
       - nginx
@@ -174,6 +178,12 @@ services:
       start_period: 30s
       
 volumes:
+  config_volume:
+    driver: local
+    driver_opts:
+      type: none
+      device: ${COMPOSE_PROJECT_DIR:-..}/docker/persist-config
+      o: bind
   searxng_data_volume:
   temp_pdf_data:
     driver: local

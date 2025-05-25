@@ -20,17 +20,17 @@ from deep_search_persist.deep_search_persist.configuration import (
 )
 from deep_search_persist.deep_search_persist.helper_classes import Message, Messages
 from deep_search_persist.deep_search_persist.helper_functions import (
-    call_llm_async,
     extract_relevant_context_async,
     generate_final_report_async,
     generate_search_queries_async,
     get_new_search_queries_async,
     is_page_useful_async,
-    judge_search_result_and_future_plan_async,
+    judge_search_result_and_refine_plan_async,
     make_initial_searching_plan_async,
     perform_search_async,
     process_link,
 )
+from deep_search_persist.deep_search_persist.local_ai import call_llm_async, call_llm_async_parse_list
 
 
 # Fixture for an aiohttp client session
@@ -102,19 +102,19 @@ async def test_make_initial_searching_plan_async(http_session):
 
 
 @pytest.mark.asyncio
-async def test_judge_search_result_and_future_plan_async(http_session):
-    """Test judge_search_result_and_future_plan_async."""
+async def test_judge_search_result_and_refine_plan_async(http_session):
+    """Test judge_search_result_and_refine_plan_async."""
     user_message = Message(role="user", content="Quantum computing research.")
     messages = Messages([user_message])
     current_plan = "Initial plan."
     all_contexts_str = "Context 1. Context 2."
-    mock_next_plan = "<done>"
+    mock_next_plan = "Updated research plan with more focus on quantum algorithms."
 
     with patch(
         "deep_search_persist.deep_search_persist.helper_functions.call_llm_async", new_callable=AsyncMock
     ) as mock_call_llm:
         mock_call_llm.return_value = mock_next_plan
-        next_plan = await judge_search_result_and_future_plan_async(
+        next_plan = await judge_search_result_and_refine_plan_async(
             http_session, messages, current_plan, all_contexts_str
         )
         assert next_plan == mock_next_plan
@@ -123,17 +123,17 @@ async def test_judge_search_result_and_future_plan_async(http_session):
 
 @pytest.mark.asyncio
 async def test_generate_search_queries_async(http_session):
-    """Test generate_search_queries_async."""
+    """Test generate_search_queries_async with new centralized parsing."""
     query_plan = "Find recent advancements in AI."
     mock_queries = ["AI advancements 2023", "latest AI research"]
 
     with patch(
-        "deep_search_persist.deep_search_persist.helper_functions.call_llm_async", new_callable=AsyncMock
-    ) as mock_call_llm:
-        mock_call_llm.return_value = str(mock_queries)  # LLM returns string representation of list
+        "deep_search_persist.deep_search_persist.helper_functions.call_llm_async_parse_list", new_callable=AsyncMock
+    ) as mock_call_llm_parse:
+        mock_call_llm_parse.return_value = mock_queries  # Returns parsed list directly
         queries = await generate_search_queries_async(http_session, query_plan)
         assert queries == mock_queries
-        mock_call_llm.assert_called_once()
+        mock_call_llm_parse.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -272,7 +272,7 @@ async def test_extract_relevant_context_async(http_session):
 
 @pytest.mark.asyncio
 async def test_get_new_search_queries_async(http_session):
-    """Test get_new_search_queries_async."""
+    """Test get_new_search_queries_async with new centralized parsing."""
     user_message = Message(role="user", content="More queries needed?")
     messages = Messages([user_message])
     new_research_plan = "Continue research."
@@ -281,14 +281,34 @@ async def test_get_new_search_queries_async(http_session):
     mock_new_queries = ["new query 1", "new query 2"]
 
     with patch(
-        "deep_search_persist.deep_search_persist.helper_functions.call_llm_async", new_callable=AsyncMock
-    ) as mock_call_llm:
-        mock_call_llm.return_value = str(mock_new_queries)
+        "deep_search_persist.deep_search_persist.helper_functions.call_llm_async_parse_list", new_callable=AsyncMock
+    ) as mock_call_llm_parse:
+        mock_call_llm_parse.return_value = mock_new_queries  # Returns parsed list directly
         queries = await get_new_search_queries_async(
             http_session, messages, new_research_plan, previous_search_queries, all_contexts
         )
         assert queries == mock_new_queries
-        mock_call_llm.assert_called_once()
+        mock_call_llm_parse.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_new_search_queries_async_done_token(http_session):
+    """Test get_new_search_queries_async returning <done> token."""
+    user_message = Message(role="user", content="Research complete?")
+    messages = Messages([user_message])
+    new_research_plan = "Research is complete."
+    previous_search_queries = ["old query"]
+    all_contexts = ["comprehensive context"]
+
+    with patch(
+        "deep_search_persist.deep_search_persist.helper_functions.call_llm_async_parse_list", new_callable=AsyncMock
+    ) as mock_call_llm_parse:
+        mock_call_llm_parse.return_value = "<done>"  # Returns <done> token
+        result = await get_new_search_queries_async(
+            http_session, messages, new_research_plan, previous_search_queries, all_contexts
+        )
+        assert result == "<done>"
+        mock_call_llm_parse.assert_called_once()
 
 
 @pytest.mark.asyncio

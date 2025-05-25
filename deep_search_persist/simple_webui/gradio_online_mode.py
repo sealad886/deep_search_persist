@@ -12,6 +12,10 @@ from loguru import logger
 
 from ..deep_search_persist.persistence import SessionSummary, SessionSummaryList  # Adjusted for clarity
 
+# Import color schemes and styling from separate files
+from .color_schemes import COLOR_SCHEMES, create_scheme_choices, get_scheme_description
+from .ui_styles import create_complete_css
+
 RESEARCH_TOML_PATH = os.environ.get("DEEP_SEARCH_RESEARCH_TOML_PATH", "/app/deep_search_persist/research.toml")
 DEFAULT_GRADIO_CONTAINER_PORT = 7860
 DEFAULT_GRADIO_HOST_PORT = 7861
@@ -27,14 +31,19 @@ def _extract_session_id(dropdown_value):
 
 def fetch_sessions(base_url):
     """Fetches the list of sessions from the API."""
-    sessions_endpoint = f"{base_url}/sessions"
+    # Remove /v1 suffix for session endpoints since they're at root level
+    session_base_url = base_url.rstrip('/v1').rstrip('/')
+    sessions_endpoint = f"{session_base_url}/sessions"
     logger.info(f"Requesting sessions from: {sessions_endpoint}")
     session_list_formatted = []
     status_message = ""
     try:
         response = requests.get(sessions_endpoint, timeout=10)
         response.raise_for_status()
-        sessions_data = response.json()
+        response_data = response.json()
+        
+        # Handle both direct array and wrapped object formats
+        sessions_data = response_data.get("sessions", response_data) if isinstance(response_data, dict) else response_data
 
         for session in sessions_data:
             session_id = session.get("session_id", "N/A")
@@ -58,18 +67,22 @@ def fetch_sessions(base_url):
             status_message = "Formatted 0 sessions, but received data. " "Check formatting logic."
         elif session_list_formatted:
             status_message = f"Fetched {len(session_list_formatted)} sessions."
+            gr.Info(f"Successfully loaded {len(session_list_formatted)} sessions")
         else:
             status_message = "No sessions found or an issue occurred before formatting."
 
     except requests.exceptions.RequestException as e:
         logger.error(f"RequestException fetching sessions: {e}")
         status_message = f"Error fetching sessions: {e}"
+        gr.Error(f"Connection error: {e}")
     except json.JSONDecodeError:
         logger.error("JSONDecodeError fetching sessions.")
         status_message = "Error decoding session data from API."
+        gr.Error("Invalid response from server - check API endpoint configuration")
     except Exception as e:
         logger.error(f"Unexpected error fetching sessions: {e}")
         status_message = f"An unexpected error occurred: {e}"
+        gr.Error(f"Unexpected error: {e}")
 
     # Return update for dropdown and status message
     return {"choices": session_list_formatted}, status_message
@@ -81,7 +94,9 @@ def fetch_session_details(dropdown_value, base_url):
     if not session_id:
         return None, "Please select a session from the list first."
 
-    details_endpoint = f"{base_url}/sessions/{session_id}"
+    # Remove /v1 suffix for session endpoints since they're at root level
+    session_base_url = base_url.rstrip('/v1').rstrip('/')
+    details_endpoint = f"{session_base_url}/sessions/{session_id}"
     session_details = None
     status_message = ""
     try:
@@ -91,10 +106,13 @@ def fetch_session_details(dropdown_value, base_url):
         status_message = f"Details loaded for session: {session_id}"
     except requests.exceptions.RequestException as e:
         status_message = f"Error fetching details for session {session_id}: {e}"
+        gr.Error(f"Failed to fetch session details: {e}")
     except json.JSONDecodeError:
         status_message = f"Error decoding session details for {session_id}."
+        gr.Error("Invalid session data from server")
     except Exception as e:
         status_message = f"An unexpected error occurred: {e}"
+        gr.Error(f"Unexpected error: {e}")
 
     return session_details, status_message
 
@@ -108,13 +126,16 @@ def delete_session_api(dropdown_value, base_url):
             None,
         )  # Return status and None for details
 
-    delete_endpoint = f"{base_url}/sessions/{session_id}"
+    # Remove /v1 suffix for session endpoints since they're at root level
+    session_base_url = base_url.rstrip('/v1').rstrip('/')
+    delete_endpoint = f"{session_base_url}/sessions/{session_id}"
     status_message = ""
     try:
         response = requests.delete(delete_endpoint, timeout=10)
         response.raise_for_status()
         if response.status_code == 200 or response.status_code == 204:  # Handle 204 No Content
             status_message = f"Session {session_id} deleted successfully."
+            gr.Info(f"Session {session_id} deleted successfully")
         else:
             # Attempt to get error message from response if available
             try:
@@ -127,8 +148,10 @@ def delete_session_api(dropdown_value, base_url):
 
     except requests.exceptions.RequestException as e:
         status_message = f"Error deleting session {session_id}: {e}"
+        gr.Error(f"Failed to delete session: {e}")
     except Exception as e:
         status_message = f"An unexpected error occurred during deletion: {e}"
+        gr.Error(f"Deletion error: {e}")
 
     # Return status message and clear the details view
     return status_message, None
@@ -211,12 +234,18 @@ def research(system_message, query, max_iterations, base_url):
                     continue  # Skip problematic chunk
 
     except requests.exceptions.Timeout:
-        yield "\n".join(agent_thinking), "Error: Request timed out after 300 seconds."
+        error_msg = "Request timed out after 300 seconds."
+        gr.Error(f"Research timeout: {error_msg}")
+        yield "\n".join(agent_thinking), f"Error: {error_msg}"
     except requests.exceptions.RequestException as e:
-        yield "\n".join(agent_thinking), f"Error connecting to API: {str(e)}"
+        error_msg = f"Error connecting to API: {str(e)}"
+        gr.Error(f"Connection failed: Check API base URL and server status")
+        yield "\n".join(agent_thinking), error_msg
     except Exception as e:
         # Catch any other unexpected errors during the request or initial processing
-        yield "\n".join(agent_thinking), f"An unexpected error occurred: {str(e)}"
+        error_msg = f"An unexpected error occurred: {str(e)}"
+        gr.Error(f"Research error: {str(e)}")
+        yield "\n".join(agent_thinking), error_msg
 
 
 def _get_webui_ports_from_config():
@@ -427,13 +456,66 @@ def refresh_status():
     return "\n".join(docker_display), ollama_display, ollama_status["status"] != "running"
 
 
+# Color scheme change function  
+def change_color_scheme(scheme_name):
+    """Change the color scheme and return new CSS."""
+    if scheme_name not in COLOR_SCHEMES:
+        scheme_name = "Classic Brown"
+    gr.Info(f"✨ Switched to {scheme_name} color scheme!")
+    return create_complete_css(scheme_name)
+
 # --- Gradio UI Creation ---
+# File-based color scheme persistence
+COLOR_SCHEME_FILE = "/tmp/gradio_color_scheme.txt"
+
+def get_saved_color_scheme():
+    """Get the saved color scheme from file."""
+    try:
+        if os.path.exists(COLOR_SCHEME_FILE):
+            with open(COLOR_SCHEME_FILE, 'r') as f:
+                scheme = f.read().strip()
+                if scheme in COLOR_SCHEMES:
+                    return scheme
+    except Exception:
+        pass
+    return "Classic Brown"
+
+def save_color_scheme(scheme_name):
+    """Save the color scheme to file."""
+    try:
+        with open(COLOR_SCHEME_FILE, 'w') as f:
+            f.write(scheme_name)
+    except Exception:
+        pass
+
 def create_ui():
-    with gr.Blocks(theme="soft") as demo:  # Use Soft theme as in other version
-        gr.Markdown(
-            "# OpenDeepResearcher Interface",
-            latex_delimiters=[{"left": "$$", "right": "$$", "display": True}],
-        )
+    # Use the saved color scheme setting
+    current_scheme = get_saved_color_scheme()
+    initial_css = create_complete_css(current_scheme)
+    
+    with gr.Blocks(css=initial_css, theme="default", title="DeepSearch Research Platform") as demo:
+        # Modern Header with Logo
+        with gr.Row(elem_classes="header-container"):
+            with gr.Column():
+                with gr.Row():
+                    logo_path = "/app/app_logo.jpg" if os.path.exists("/app/app_logo.jpg") else "../app_logo.jpg"
+                    if os.path.exists(logo_path):
+                        gr.Image(
+                            value=logo_path,
+                            elem_classes="app-logo",
+                            show_label=False,
+                            container=False,
+                            width=48,
+                            height=48
+                        )
+                    gr.HTML("""
+                        <div class="app-title">
+                            DeepSearch Research Platform
+                        </div>
+                        <div class="app-subtitle">
+                            Intelligent research automation with iterative search and analysis
+                        </div>
+                    """)
 
         # Determine API base URL - prefer environment variable if set (useful for Docker)
         default_api_base_url = os.environ.get("DEEP_SEARCH_API_BASE_URL", "http://app-persist:8000/persist")
@@ -451,53 +533,95 @@ def create_ui():
                 "inter-container communication."
             )
 
-        base_url = gr.Textbox(
-            label="API Base URL",
-            value=default_api_base_url,
-            placeholder=("Enter API base URL (e.g., http://app-persist:8000/persist " "or http://localhost:8000/persist)"),
-        )
+        # Configuration Section
+        with gr.Group(elem_classes="settings-card"):
+            gr.Markdown("### 🔧 Configuration", elem_classes="section-header")
+            
+            with gr.Row():
+                base_url = gr.Textbox(
+                    label="API Base URL",
+                    value=default_api_base_url,
+                    placeholder="Enter API base URL (e.g., http://app-persist:8000/persist or http://localhost:8000/persist)",
+                    elem_classes="config-input",
+                    scale=2
+                )
+                
+                color_scheme = gr.Dropdown(
+                    label="🎨 Color Theme",
+                    choices=create_scheme_choices(),
+                    value=current_scheme,
+                    elem_classes="color-scheme-dropdown",
+                    scale=1
+                )
+            
+            # Display scheme description
+            scheme_description = gr.Markdown(
+                value=f"**{COLOR_SCHEMES[current_scheme]['description']}**",
+                elem_classes="scheme-description"
+            )
 
-        with gr.Tabs():
+        with gr.Tabs(elem_classes="main-tabs"):
             # --- Research Tab ---
-            with gr.TabItem("Research"):
+            with gr.TabItem("🔍 Research", elem_id="research-tab"):
                 with gr.Row():
-                    # Left column for settings (1/4 width)
-                    with gr.Column(scale=1):
+                    # Left column for settings (1/3 width)
+                    with gr.Column(scale=1, elem_classes="settings-card"):
+                        gr.Markdown("### Research Configuration")
+                        
                         system_msg = gr.Textbox(
-                            label="System Message (Optional)",
-                            placeholder="Enter system message here...",
+                            label="System Message",
+                            placeholder="Optional: Enter custom system instructions...",
                             lines=3,
+                            elem_classes="system-input"
                         )
+                        
                         query = gr.Textbox(
                             label="Research Query",
-                            placeholder="What would you like to research?",
-                            lines=5,  # Increased lines for query
+                            placeholder="What would you like to research? Be as specific as possible...",
+                            lines=6,
+                            elem_classes="query-input"
                         )
-                        max_iter = gr.Slider(
-                            minimum=1,
-                            maximum=50,
-                            value=30,
-                            step=1,
-                            label="Max Iterations",
+                        
+                        with gr.Row():
+                            max_iter = gr.Slider(
+                                minimum=1,
+                                maximum=50,
+                                value=15,  # Updated default
+                                step=1,
+                                label="Max Iterations",
+                                elem_classes="iteration-slider"
+                            )
+                        
+                        start_research_btn = gr.Button(
+                            "🚀 Start Research", 
+                            variant="primary",
+                            size="lg",
+                            elem_classes="start-button"
                         )
-                        start_research_btn = gr.Button("Start Research", variant="primary")
 
-                    # Right column for outputs (3/4 width)
-                    with gr.Column(scale=3):
-                        thinking_output = gr.Textbox(
-                            label="Agent Thinking",
-                            lines=20,  # Adjusted lines
-                            max_lines=40,
-                            show_copy_button=True,
-                            interactive=False,  # Read-only
-                        )
-                        final_output = gr.Textbox(
-                            label="Final Report",
-                            lines=20,  # Adjusted lines
-                            max_lines=40,
-                            show_copy_button=True,
-                            interactive=False,  # Read-only
-                        )
+                    # Right column for outputs (2/3 width)
+                    with gr.Column(scale=2):
+                        with gr.Group(elem_classes="output-card"):
+                            thinking_output = gr.Textbox(
+                                label="🤔 Agent Thinking & Progress",
+                                lines=22,
+                                max_lines=50,
+                                show_copy_button=True,
+                                interactive=False,
+                                elem_classes="thinking-output",
+                                placeholder="Agent thinking process will appear here..."
+                            )
+                        
+                        with gr.Group(elem_classes="output-card"):
+                            final_output = gr.Textbox(
+                                label="📋 Final Research Report",
+                                lines=22,
+                                max_lines=50,
+                                show_copy_button=True,
+                                interactive=False,
+                                elem_classes="report-output",
+                                placeholder="Your final research report will appear here..."
+                            )
 
                 start_research_btn.click(
                     fn=research,
@@ -507,23 +631,52 @@ def create_ui():
                 )
 
             # --- Session Management Tab ---
-            with gr.TabItem("Session Management"):
+            with gr.TabItem("💾 Session Management", elem_id="session-tab"):
                 with gr.Row():
-                    with gr.Column(scale=1):
-                        gr.Markdown("### Manage Saved Sessions")
-                        refresh_sessions_btn = gr.Button("Refresh Session List")
+                    with gr.Column(scale=1, elem_classes="settings-card"):
+                        gr.Markdown("### 📂 Manage Research Sessions")
+                        
+                        with gr.Row():
+                            refresh_sessions_btn = gr.Button(
+                                "🔄 Refresh Sessions", 
+                                variant="secondary",
+                                elem_classes="refresh-button"
+                            )
+                        
                         session_dropdown = gr.Dropdown(
-                            label="Select Session",
-                            choices=[],  # Initially empty, populated by refresh
+                            label="📋 Select Session",
+                            value=None,
+                            choices=[],
                             interactive=True,
+                            elem_classes="session-dropdown",
+                            filterable=True,
                         )
-                        view_details_btn = gr.Button("View Details")
-                        delete_session_btn = gr.Button("Delete Selected Session", variant="stop")
-                        session_status_text = gr.Textbox(label="Status", interactive=False)
+                        
+                        with gr.Row():
+                            view_details_btn = gr.Button(
+                                "👁️ View Details", 
+                                variant="secondary",
+                                elem_classes="view-button"
+                            )
+                            delete_session_btn = gr.Button(
+                                "🗑️ Delete Session", 
+                                variant="stop",
+                                elem_classes="delete-button"
+                            )
+                        
+                        session_status_text = gr.Textbox(
+                            label="📊 Status", 
+                            interactive=False,
+                            elem_classes="status-text",
+                            placeholder="Session operation status will appear here..."
+                        )
 
-                    with gr.Column(scale=2):
-                        gr.Markdown("### Session Details")
-                        session_details_json = gr.JSON(label="Full Session Data")
+                    with gr.Column(scale=2, elem_classes="output-card"):
+                        gr.Markdown("### 🔍 Session Details")
+                        session_details_json = gr.JSON(
+                            label="Session Data",
+                            elem_classes="session-json"
+                        )
 
                 # --- Session Management Event Handlers ---
                 refresh_sessions_btn.click(
@@ -564,26 +717,31 @@ def create_ui():
                 # )
 
             # --- System Status Tab ---
-            with gr.TabItem("System Status"):
+            with gr.TabItem("🚀 System Status", elem_id="status-tab"):
                 with gr.Row():
-                    with gr.Column(scale=1):
-                        gr.Markdown("### System Health Monitor")
+                    with gr.Column(scale=1, elem_classes="settings-card"):
+                        gr.Markdown("### 🏥 System Health Monitor")
                         
                         with gr.Row():
-                            refresh_status_btn = gr.Button("Refresh Status", variant="primary")
+                            refresh_status_btn = gr.Button(
+                                "🔄 Refresh Status", 
+                                variant="primary",
+                                elem_classes="refresh-button"
+                            )
                             auto_refresh_checkbox = gr.Checkbox(
-                                label="Auto-refresh (30s)", 
+                                label="⏰ Auto-refresh (30s)", 
                                 value=False,
-                                scale=0
+                                elem_classes="auto-refresh-checkbox"
                             )
                         
                         refresh_interval = gr.Number(
-                            label="Refresh Interval (seconds)",
+                            label="⏱️ Refresh Interval (seconds)",
                             value=30,
                             minimum=5,
                             maximum=300,
                             step=5,
-                            visible=False
+                            visible=False,
+                            elem_classes="refresh-interval"
                         )
                         
                         # Terminal launch section (only show when Ollama is not running)
@@ -680,6 +838,49 @@ def create_ui():
                     outputs=[terminal_status_text]
                 )
 
+        # Add reload button for color scheme changes
+        with gr.Row():
+            reload_btn = gr.Button(
+                "🔄 Apply Color Scheme", 
+                variant="secondary",
+                visible=False,
+                elem_classes="reload-button"
+            )
+
+        # Color scheme change handler
+        def update_scheme_description(scheme_name):
+            """Update the scheme description and show apply button."""
+            if scheme_name in COLOR_SCHEMES:
+                desc = COLOR_SCHEMES[scheme_name]['description']
+                save_color_scheme(scheme_name)  # Save to file
+                
+                current_saved = get_saved_color_scheme()
+                if scheme_name != current_saved or scheme_name != "Classic Brown":
+                    gr.Info(f"🎨 Selected {scheme_name}! Click 'Apply Color Scheme' to reload with new colors.")
+                    return f"**{desc}**", gr.update(visible=True)
+                else:
+                    gr.Info(f"✨ Using {scheme_name} color scheme!")
+                    return f"**{desc}**", gr.update(visible=False)
+            return "**Select a color scheme**", gr.update(visible=False)
+        
+        def reload_with_scheme():
+            """Reload the interface with the new color scheme."""
+            gr.Info("🔄 Reloading with new color scheme...")
+            # This will cause a page reload to apply the new CSS
+            return gr.update(), gr.update(visible=False)
+
+        color_scheme.change(
+            fn=update_scheme_description,
+            inputs=[color_scheme],
+            outputs=[scheme_description, reload_btn]
+        )
+        
+        reload_btn.click(
+            fn=reload_with_scheme,
+            outputs=[scheme_description, reload_btn],
+            js="() => { setTimeout(() => window.location.reload(), 1000); }"
+        )
+
     return demo
 
 
@@ -707,8 +908,10 @@ def launch_webui():
 
     # The `inbrowser=True` will attempt to open a browser inside the container;
     # it usually won't be visible on your host but is harmless.
-    demo.launch(server_name="0.0.0.0", server_port=container_port, 
-                inbrowser=False, pwa=True, favicon_path="/app/simple-webui/imgs/app_logo.jpg")
+    demo.launch(
+        server_name="0.0.0.0", server_port=container_port, 
+        inbrowser=False, pwa=True, favicon_path="/app/simple-webui/imgs/app_logo.jpg",
+    )
 
 
 __all__ = [
