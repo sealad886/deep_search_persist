@@ -190,12 +190,13 @@ cython_debug/
 volumes/
 .*ignore
 !.gitignore
+.roomodes
 .veve
 .DS_Store
 .env
 # !docker/.env
 logs/
-deep_search_persist/deep_search_persist/persist-config/research.toml
+**/research.toml
 archive/
 .claude/
 docs-internal/
