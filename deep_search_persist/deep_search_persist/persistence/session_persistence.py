@@ -22,7 +22,7 @@ from ..persistence.utils import DatetimeException, clean_dict, from_iso, to_iso
 
 
 # --- Status Constants ---
-class SessionStatuses(Enum):
+class SessionStatus(Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     INTERRUPTED = "interrupted"
@@ -45,13 +45,13 @@ class SessionStatuses(Enum):
 
 # --- Pydantic Session Summary ---
 class SessionSummary(BaseModel):
-    status_types: ClassVar[type[SessionStatuses]] = SessionStatuses  # Assign the Enum class
+    status_types: ClassVar[type[SessionStatus]] = SessionStatus  # Assign the Enum class
 
     session_id: str
     user_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
-    status: SessionStatuses = SessionStatuses._INIT  # Use the Enum type directly
+    status: SessionStatus = SessionStatus._INIT  # Use the Enum type directly
     current_iteration: Optional[int] = None
     last_error: Optional[str] = None
 
@@ -194,16 +194,16 @@ class SessionPersistenceManager:
 
                         if current_hash == stored_hash:
                             # Pydantic validation and SessionSummary creation logic
-                            db_status_str = session_doc.get("status", SessionStatuses.ERROR.value)
-                            if db_status_str not in SessionStatuses:
+                            db_status_str = session_doc.get("status", SessionStatus.ERROR.value)
+                            if db_status_str not in SessionStatus:
                                 logger.warning(
                                     "Session has invalid status. Defaulting to ERROR",
                                     session_id=current_session_id_str,
                                     invalid_status=db_status_str,
                                 )
-                                final_status = SessionStatuses.ERROR
+                                final_status = SessionStatus.ERROR
                             else:
-                                final_status = SessionStatuses(db_status_str)
+                                final_status = SessionStatus(db_status_str)
 
                             created_dt = from_iso(session_doc.get("created_at")) or datetime.now(timezone.utc)
                             updated_dt = from_iso(session_doc.get("updated_at")) or datetime.now(timezone.utc)
@@ -263,12 +263,12 @@ class SessionPersistenceManager:
             if not isinstance(session_obj_id, ObjectId):
                 session_obj_id = ObjectId()
                 session.mongo_object_id = session_obj_id
-            session_data = session.dict() if hasattr(session, "dict") else dict(session)
-            status_val = getattr(session, "status", SessionStatuses.ERROR.value)
-            if isinstance(status_val, SessionStatuses):
+            session_data = session.model_dump() if hasattr(session, "model_dump") else dict(session)
+            status_val = getattr(session, "status", SessionStatus.ERROR.value)
+            if isinstance(status_val, SessionStatus):
                 status_val = status_val.value
-            elif status_val not in SessionStatuses.get_all_values():
-                status_val = SessionStatuses.ERROR.value
+            elif status_val not in SessionStatus.get_all_values():
+                status_val = SessionStatus.ERROR.value
 
             is_new_session = not session_id_val
             saved_session_id_str: Optional[str] = None  # To store the ID for logging
@@ -404,14 +404,14 @@ class SessionPersistenceManager:
         summaries = []
         for doc in session_docs:
             try:
-                db_status_str = doc.get("status", SessionStatuses.ERROR.value)
-                if db_status_str not in SessionStatuses:
+                db_status_str = doc.get("status", SessionStatus.ERROR.value)
+                if db_status_str not in SessionStatus:
                     logger.warning(
                         f"Session {doc['_id']} has invalid status '{db_status_str}' in list_sessions. Defaulting to ERROR."
                     )
-                    final_status = SessionStatuses.ERROR
+                    final_status = SessionStatus.ERROR
                 else:
-                    final_status = SessionStatuses(db_status_str)
+                    final_status = SessionStatus(db_status_str)
 
                 # Assuming MongoDB stores BSON dates, motor converts them to Python datetime.
                 # If they are strings, from_iso would be needed.
@@ -609,7 +609,7 @@ class SessionPersistenceManager:
 
 __all__ = [
     "SessionPersistenceManager",
-    "SessionStatuses",
+    "SessionStatus",
     "SessionSummary",
     "SessionSummaryList",
 ]

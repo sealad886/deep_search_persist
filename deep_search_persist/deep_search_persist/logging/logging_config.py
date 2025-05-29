@@ -69,7 +69,7 @@ logger.configure(
             "format": LOG_FORMAT,
             "level": "DEBUG",
             "rotation": "10 MB",  # Rotate at 10 MB
-            "retention": "1 week",  # Keep logs for 1 week
+            "retention": 5,  # Keep 5 rotated files
             "compression": "zip",  # Compress rotated logs
             "enqueue": True,  # Use a queue for thread-safety
             "backtrace": True,  # Show traceback information

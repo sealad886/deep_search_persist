@@ -1,10 +1,10 @@
 from ..persistence import utils
-from .session_persistence import SessionPersistenceManager, SessionStatuses, SessionSummary, SessionSummaryList
+from .session_persistence import SessionPersistenceManager, SessionStatus, SessionSummary, SessionSummaryList
 
 __all__ = [
     "SessionSummary",
     "SessionSummaryList",
-    "SessionStatuses",
+    "SessionStatus",
     "SessionPersistenceManager",
     "utils",
 ]

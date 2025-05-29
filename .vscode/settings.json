@@ -19,5 +19,6 @@
         "**/ENV",
         "**/docs/_build",
         "**/htmlcov"
-    ]
+    ],
+    "python-envs.pythonProjects": []
 }
