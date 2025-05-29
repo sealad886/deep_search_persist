@@ -201,3 +201,4 @@ logs/
 archive/
 .claude/
 docs-internal/
+.git/
