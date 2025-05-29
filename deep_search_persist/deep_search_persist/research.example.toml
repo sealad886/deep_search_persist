@@ -4,11 +4,11 @@ default_model_ctx = 256000
 reason_model_ctx = -1
 
 [API]
-openai_compat_api_key = "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"
-jina_api_key = "jina_55069093954b401bbcb45431c1890094ekvmN8ZUN_cI2ohruBrxJIt_9zO-"
-openai_url = "https://openrouter.ai/api/v1/chat/completions"
-jina_base_url = "https://r.jina.ai/"
-searxng_url = "http://host.docker.internal:4000/search"
+openai_compat_api_key = "${OPENAI_COMPAT_API_KEY}"
+jina_api_key = "${JINA_API_KEY}"
+openai_url = "${OPENAI_URL}"
+jina_base_url = "${JINA_BASE_URL}"
+searxng_url = "${SEARXNG_URL}"
 
 [Settings]
 use_jina = false
@@ -38,3 +38,11 @@ verbose_web_parse_detail = true
 request_per_minute = 12
 operation_wait_time = 10
 fallback_model = "llama3.2:3b-instruct-q8_0"
+
+[WebUI]
+# Desired host port for accessing the Gradio UI when running in Docker.
+# Ensure the GRADIO_HOST_PORT environment variable in your .env file (used by Docker Compose)
+# is set to this value for the port mapping to take effect.
+gradio_host_port = 7860
+# Port the Gradio service listens on *inside* its container.
+gradio_container_port = 7860
