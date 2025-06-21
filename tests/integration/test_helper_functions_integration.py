@@ -1,23 +1,12 @@
 import asyncio
 import json
+from typing import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
 import pytest
 
-from deep_search_persist.deep_search_persist.configuration import (
-    BASE_SEARXNG_URL,
-    DEFAULT_MODEL,
-    DEFAULT_MODEL_CTX,
-    JINA_API_KEY,
-    JINA_BASE_URL,
-    OPENAI_COMPAT_API_KEY,
-    OPENAI_URL,
-    REASON_MODEL,
-    REASON_MODEL_CTX,
-    USE_JINA,
-    USE_OLLAMA,
-)
+from deep_search_persist.deep_search_persist.configuration import app_config
 from deep_search_persist.deep_search_persist.helper_classes import Message, Messages
 from deep_search_persist.deep_search_persist.helper_functions import (
     extract_relevant_context_async,
@@ -30,12 +19,12 @@ from deep_search_persist.deep_search_persist.helper_functions import (
     perform_search_async,
     process_link,
 )
-from deep_search_persist.deep_search_persist.local_ai import call_llm_async, call_llm_async_parse_list
+from deep_search_persist.deep_search_persist.local_ai import call_llm_async, call_llm_async_parse_list, fetch_webpage_text_async
 
 
 # Fixture for an aiohttp client session
 @pytest.fixture
-async def http_session():
+async def http_session() -> AsyncGenerator[aiohttp.ClientSession, None]:
     async with aiohttp.ClientSession() as session:
         yield session
 
@@ -53,10 +42,10 @@ async def test_call_llm_async_openrouter_success(http_session):
         "deep_search_persist.deep_search_persist.local_ai.call_openrouter_async", new_callable=AsyncMock
     ) as mock_openrouter:
         mock_openrouter.return_value = mock_response_content
-        with patch("deep_search_persist.deep_search_persist.configuration.USE_OLLAMA", False):
-            response = await call_llm_async(http_session, messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+        with patch.object(app_config, 'use_ollama', False):
+            response = await call_llm_async(http_session, messages, model=app_config.default_model, ctx=app_config.default_model_ctx)
             assert response == mock_response_content
-            mock_openrouter.assert_called_once_with(http_session, messages, model=DEFAULT_MODEL)
+            mock_openrouter.assert_called_once_with(http_session, messages, model=app_config.default_model)
 
 
 @pytest.mark.asyncio
@@ -79,8 +68,8 @@ async def test_call_llm_async_ollama_success(http_session):
         "deep_search_persist.deep_search_persist.local_ai.call_ollama_async", new_callable=AsyncMock
     ) as mock_ollama:
         mock_ollama.return_value = MockAsyncGenerator(mock_response_content)
-        with patch("deep_search_persist.deep_search_persist.configuration.USE_OLLAMA", True):
-            response = await call_llm_async(http_session, messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+        with patch.object(app_config, 'use_ollama', True):
+            response = await call_llm_async(http_session, messages, model=app_config.default_model, ctx=app_config.default_model_ctx)
             assert response == mock_response_content
             mock_ollama.assert_called_once()  # Args are passed to the inner call_ollama_async
 
@@ -176,7 +165,7 @@ async def test_perform_search_async_success(http_session):
 
         links = await perform_search_async(http_session, query)
         assert links == ["http://link1.com", "http://link2.com"]
-        mock_get.assert_called_once_with(BASE_SEARXNG_URL, params={"q": query, "format": "json"})
+        mock_get.assert_called_once_with(app_config.base_searxng_url, params={"q": query, "format": "json"})
 
 
 @pytest.mark.asyncio
@@ -187,7 +176,7 @@ async def test_fetch_webpage_text_async_playwright_html(http_session):
     mock_cleaned_html = "<div>Cleaned HTML content</div>"
     mock_markdown_text = "Markdown content"
 
-    with patch("deep_search_persist.deep_search_persist.configuration.USE_JINA", False):
+    with patch.object(app_config, 'use_jina', False):
         with patch("deep_search_persist.deep_search_persist.configuration.USE_EMBED_BROWSER", True):
             with patch("playwright.async_api.async_playwright", new_callable=AsyncMock) as mock_playwright:
                 mock_browser = AsyncMock()
@@ -220,7 +209,7 @@ async def test_fetch_webpage_text_async_jina(http_session):
     url = "http://example.com/jina"
     mock_jina_response = "Jina fetched content."
 
-    with patch("deep_search_persist.deep_search_persist.configuration.USE_JINA", True):
+    with patch.object(app_config, 'use_jina', True):
         with patch("aiohttp.ClientSession.get", new_callable=AsyncMock) as mock_get:
             mock_resp = MagicMock()
             mock_resp.status = 200
@@ -230,23 +219,22 @@ async def test_fetch_webpage_text_async_jina(http_session):
             result = await fetch_webpage_text_async(http_session, url)
             assert result == mock_jina_response
             mock_get.assert_called_once_with(
-                f"{JINA_BASE_URL}{url}", headers={"Authorization": f"Bearer {JINA_API_KEY}"}
+                f"{app_config.jina_base_url}{url}", headers={"Authorization": f"Bearer {app_config.jina_api_key}"}
             )
 
 
 @pytest.mark.asyncio
-async def test_is_page_useful_async(http_session):
+async def test_is_page_useful_async(http_session: aiohttp.ClientSession):
     """Test is_page_useful_async."""
     user_message = Message(role="user", content="Is this page useful for my query?")
     messages = Messages([user_message])
     page_text = "This page contains useful information."
-    page_url = "http://example.com/useful"
 
     with patch(
         "deep_search_persist.deep_search_persist.helper_functions.call_llm_async", new_callable=AsyncMock
     ) as mock_call_llm:
         mock_call_llm.return_value = "Yes"
-        usefulness = await is_page_useful_async(http_session, messages, page_text, page_url)
+        usefulness = await is_page_useful_async(http_session, messages, page_text)
         assert usefulness == "Yes"
         mock_call_llm.assert_called_once()
 
@@ -265,7 +253,7 @@ async def test_extract_relevant_context_async(http_session):
         "deep_search_persist.deep_search_persist.helper_functions.call_llm_async", new_callable=AsyncMock
     ) as mock_call_llm:
         mock_call_llm.return_value = mock_extracted_context
-        context = await extract_relevant_context_async(http_session, messages, search_query, page_text, page_url)
+        context = await extract_relevant_context_async(http_session, messages, search_query, page_text)
         assert context == mock_extracted_context
         mock_call_llm.assert_called_once()
 

@@ -1,30 +1,34 @@
 import re
-from typing import Optional
+from typing import Optional, Tuple
 
 
 class Prompt(str):
-    __slots__ = ("raw",)
-    raw: Optional[str]
+    __slots__: Tuple[str, ...] = ('raw',)  # Using 'raw' as the slot and attribute name
+    raw: str  # Type hint for the instance attribute 'raw'
 
     def __new__(cls, raw: str):
- # Create the string value from the raw input
-        obj = super().__new__(cls, raw)
-        # Store the original prompt
-        obj.raw = raw
-        return obj
+        """
+        Creates a new Prompt object. The string value of this object
+        will be the 'raw' text.
+        Assumes 'raw' is a string, as per type hint.
+        """
+        # Create the string instance using the raw text.
+        # So, if p = Prompt("  text  "), then p itself is "  text  ".
+        instance = super().__new__(cls, raw)
+        # Store the original raw text in the 'raw' attribute.
+        instance.raw = raw
+        return instance
 
     def __init__(self, raw: str):
-        # raw is already set in __new__; no additional initialization needed
-        pass
-
-    def __repr__(self) -> str:
-        return self.clean_prompt(prompt=(self.raw if hasattr(self, "raw") else ""))
-
-    def __str__(self) -> str:
-        return self.__repr__()
-
-    def __len__(self) -> int:
-        return len(self.__str__())
+        """
+        Initializes the Prompt object.
+        The 'raw' attribute is already set by __new__.
+        This method is called after __new__ with the same arguments.
+        """
+        # str.__init__ doesn't take arguments, so no super().__init__(raw).
+        # Call super().__init__() for object initialization if necessary.
+        super().__init__()
+        self.raw = raw
 
     @classmethod
     def clean_prompt(cls, prompt: Optional[str] = None) -> str:
@@ -52,6 +56,25 @@ class Prompt(str):
 
         final_cleaned_prompt = "\n".join(cleaned_lines)
         return final_cleaned_prompt.strip()
+
+    def __repr__(self) -> str:
+        """
+        Returns the cleaned representation of the prompt.
+        The 'raw' attribute should always be set by __new__.
+        """
+        return Prompt.clean_prompt(prompt=self.raw)
+
+    def __str__(self) -> str:
+        """
+        Returns the cleaned string representation of the prompt.
+        """
+        return self.__repr__() # Consistent with original behavior
+
+    def __len__(self) -> int:
+        """
+        Returns the length of the cleaned string representation.
+        """
+        return len(self.__str__())
 
 
 INITIAL_SEARCH_PLAN_PROMPT = Prompt(

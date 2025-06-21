@@ -9,9 +9,9 @@ import os
 import tempfile
 import subprocess
 
-from ...deep_search_persist.simple_webui.utils.color_schemes import generate_perceptual_palette
-from ...deep_search_persist.simple_webui.utils.hue_spacing_calculator import validate_palette_accessibility
-from ...deep_search_persist.simple_webui.utils.color_convert import hex_to_rgb  # Used for basic validation
+from deep_search_persist.simple_webui.utils.color_schemes import generate_perceptual_palette
+from deep_search_persist.simple_webui.utils.hue_spacing_calculator import validate_palette_accessibility
+from deep_search_persist.simple_webui.utils.color_convert import hex_to_rgb  # Used for basic validation
 
 
 class TestColorIntegration(unittest.TestCase):

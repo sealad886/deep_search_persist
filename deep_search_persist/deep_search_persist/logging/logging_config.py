@@ -32,13 +32,19 @@ import sys
 from datetime import datetime
 from functools import wraps  # type: ignore
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Dict, Optional, TypeVar, Union, cast
+from typing import Any, Awaitable, Callable, Optional, TypeVar, Union, cast
+
+if sys.version_info >= (3, 10):
+    from typing import ParamSpec, overload
+else:
+    from typing_extensions import ParamSpec, overload
 
 from loguru import logger
 
 # Type variables for return type preservation in decorators
-T = TypeVar("T")
+# T = TypeVar("T") # Commented out for overload refactor using R
 R = TypeVar("R")
+P = ParamSpec("P")
 
 # Clear existing handlers
 logger.remove()
@@ -141,7 +147,7 @@ class AsyncLogContext:
             logger.info(f"Completed async {self.name}", **self.context)
 
 
-def is_coroutine_function(func: Callable) -> bool:
+def is_coroutine_function(func: Callable[..., Any]) -> bool:
     """Check if a function is a coroutine function.
 
     Args:
@@ -180,16 +186,24 @@ def log_operation(operation_name: str, level: str = "INFO"):
         The wrapped function with logging
     """
 
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
+    @overload
+    def decorator(func: Callable[P, Awaitable[R]]) -> Callable[P, Awaitable[R]]: ...
+
+    @overload
+    def decorator(func: Callable[P, R]) -> Callable[P, R]: ...
+
+    def decorator(func: Callable[P, Any]) -> Callable[P, Any]:
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
             # Extract context info from kwargs if available
-            context = kwargs.pop("log_context", {})
+            log_context_value = kwargs.pop("log_context", None)
+            context: dict[str, Any] = log_context_value if isinstance(log_context_value, dict) else {}
             log_func = getattr(logger, level.lower())
 
             log_func(f"Starting {operation_name}", **context)
             try:
-                result = func(*args, **kwargs)
+                typed_sync_func = cast(Callable[P, Any], func)
+                result: Any = typed_sync_func(*args, **kwargs)
                 log_func(f"Completed {operation_name}", **context)
                 return result
             except Exception as e:
@@ -197,14 +211,17 @@ def log_operation(operation_name: str, level: str = "INFO"):
                 raise
 
         @wraps(func)
-        async def async_wrapper(*args, **kwargs):
+        async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> Any:
             # Extract context info from kwargs if available
-            context = kwargs.pop("log_context", {})
+            log_context_value = kwargs.pop("log_context", None)
+            context: dict[str, Any] = log_context_value if isinstance(log_context_value, dict) else {}
             log_func = getattr(logger, level.lower())
 
             log_func(f"Starting async {operation_name}", **context)
             try:
-                result = await cast(Awaitable[Any], func(*args, **kwargs))
+                # Explicitly cast func to an async callable type for the type checker
+                typed_async_func = cast(Callable[P, Awaitable[Any]], func)
+                result: Any = await typed_async_func(*args, **kwargs)
                 log_func(f"Completed async {operation_name}", **context)
                 return result
             except Exception as e:
@@ -213,8 +230,8 @@ def log_operation(operation_name: str, level: str = "INFO"):
 
         # Return appropriate wrapper based on if the function is a coroutine
         if is_coroutine_function(func):
-            return cast(Callable[..., T], async_wrapper)
-        return cast(Callable[..., T], wrapper)
+            return async_wrapper
+        return wrapper
 
     return decorator
 

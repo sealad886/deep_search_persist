@@ -12,9 +12,15 @@ from loguru import logger
 
 from ..deep_search_persist.persistence import SessionSummary, SessionSummaryList  # Adjusted for clarity
 
-# Import color schemes and styling from separate files
-from .color_schemes import COLOR_SCHEMES, create_scheme_choices, get_scheme_description
-from .ui_styles import create_complete_css
+# Import simplified Gradio native themes
+from .gradio_themes import (
+    GRADIO_THEMES,
+    get_theme_choices,
+    get_theme,
+    get_theme_description,
+    get_saved_theme,
+    save_theme
+)
 
 RESEARCH_TOML_PATH = os.environ.get("DEEP_SEARCH_RESEARCH_TOML_PATH", "/app/deep_search_persist/research.toml")
 DEFAULT_GRADIO_CONTAINER_PORT = 7860
@@ -117,6 +123,17 @@ def fetch_session_details(dropdown_value, base_url):
     return session_details, status_message
 
 
+def resume_session(dropdown_value):
+    """Extracts session ID from dropdown selection for resuming."""
+    session_id = _extract_session_id(dropdown_value)
+    if not session_id:
+        gr.Warning("Please select a session first")
+        return ""
+    
+    gr.Info(f"Session ID {session_id} copied to Research tab")
+    return session_id
+
+
 def delete_session_api(dropdown_value, base_url):
     """Deletes the selected session via the API."""
     session_id = _extract_session_id(dropdown_value)
@@ -157,8 +174,8 @@ def delete_session_api(dropdown_value, base_url):
     return status_message, None
 
 
-# --- Original Research Function (Unchanged) ---
-def research(system_message, query, max_iterations, base_url):
+# --- Enhanced Research Function with Session Support ---
+def research(system_message, query, max_iterations, base_url, session_id=None):
     messages = []
     if system_message:
         messages.append({"role": "system", "content": system_message})
@@ -175,11 +192,16 @@ def research(system_message, query, max_iterations, base_url):
         "max_iterations": max_iterations,
         "stream": True,
     }
+    
+    # Add session_id if provided (for resuming sessions)
+    if session_id:
+        data["session_id"] = session_id
 
     agent_thinking = []
     final_report = ""
     in_thinking = False
     current_think = ""
+    current_session_id = None
 
     try:
         # Use the persistent endpoint
@@ -200,6 +222,14 @@ def research(system_message, query, max_iterations, base_url):
             if line.startswith(b"data: "):
                 try:
                     line_str = line[6:].decode("utf-8")
+                    
+                    # Handle SESSION_ID messages
+                    if line_str.startswith("SESSION_ID:"):
+                        current_session_id = line_str.split("SESSION_ID:")[1].strip()
+                        agent_thinking.append(f"📎 Session ID: {current_session_id}")
+                        yield "\n".join(agent_thinking), final_report
+                        continue
+                    
                     chunk = json.loads(line_str)
                     if chunk.get("choices") and chunk["choices"][0].get("delta", {}).get("content"):
                         content = chunk["choices"][0]["delta"]["content"]
@@ -230,7 +260,7 @@ def research(system_message, query, max_iterations, base_url):
                     # Ignore lines that are not valid JSON after "data: "
                     continue
                 except Exception as e_inner:  # Catch other potential errors during chunk processing
-                    print(f"Error processing chunk: {e_inner}, Line: {line}")  # Debugging
+                    logger.warning(f"Error processing chunk: {e_inner}, Line: {line}")
                     continue  # Skip problematic chunk
 
     except requests.exceptions.Timeout:
@@ -456,44 +486,27 @@ def refresh_status():
     return "\n".join(docker_display), ollama_display, ollama_status["status"] != "running"
 
 
-# Color scheme change function  
-def change_color_scheme(scheme_name):
-    """Change the color scheme and return new CSS."""
-    if scheme_name not in COLOR_SCHEMES:
-        scheme_name = "Classic Brown"
-    gr.Info(f"✨ Switched to {scheme_name} color scheme!")
-    return create_complete_css(scheme_name)
+# Theme change function with persistence  
+def change_theme(theme_name):
+    """Change the theme and save preference."""
+    if theme_name not in GRADIO_THEMES:
+        theme_name = "Aurora Professional"
+    
+    # Save the selected theme
+    save_theme(theme_name)
+    
+    gr.Info(f"✨ Theme will change to {theme_name} on next reload!")
+    return theme_name
 
 # --- Gradio UI Creation ---
-# File-based color scheme persistence
-COLOR_SCHEME_FILE = "/tmp/gradio_color_scheme.txt"
-
-def get_saved_color_scheme():
-    """Get the saved color scheme from file."""
-    try:
-        if os.path.exists(COLOR_SCHEME_FILE):
-            with open(COLOR_SCHEME_FILE, 'r') as f:
-                scheme = f.read().strip()
-                if scheme in COLOR_SCHEMES:
-                    return scheme
-    except Exception:
-        pass
-    return "Classic Brown"
-
-def save_color_scheme(scheme_name):
-    """Save the color scheme to file."""
-    try:
-        with open(COLOR_SCHEME_FILE, 'w') as f:
-            f.write(scheme_name)
-    except Exception:
-        pass
 
 def create_ui():
-    # Use the saved color scheme setting
-    current_scheme = get_saved_color_scheme()
-    initial_css = create_complete_css(current_scheme)
+    # Use the saved theme setting
+    current_theme = get_saved_theme()
+    theme = get_theme(current_theme)
     
-    with gr.Blocks(css=initial_css, theme="default", title="DeepSearch Research Platform") as demo:
+    with gr.Blocks(theme=theme, title="DeepSearch Research Platform") as demo:
+        
         # Modern Header with Logo
         with gr.Row(elem_classes="header-container"):
             with gr.Column():
@@ -533,32 +546,8 @@ def create_ui():
                 "inter-container communication."
             )
 
-        # Configuration Section
-        with gr.Group(elem_classes="settings-card"):
-            gr.Markdown("### 🔧 Configuration", elem_classes="section-header")
-            
-            with gr.Row():
-                base_url = gr.Textbox(
-                    label="API Base URL",
-                    value=default_api_base_url,
-                    placeholder="Enter API base URL (e.g., http://app-persist:8000/persist or http://localhost:8000/persist)",
-                    elem_classes="config-input",
-                    scale=2
-                )
-                
-                color_scheme = gr.Dropdown(
-                    label="🎨 Color Theme",
-                    choices=create_scheme_choices(),
-                    value=current_scheme,
-                    elem_classes="color-scheme-dropdown",
-                    scale=1
-                )
-            
-            # Display scheme description
-            scheme_description = gr.Markdown(
-                value=f"**{COLOR_SCHEMES[current_scheme]['description']}**",
-                elem_classes="scheme-description"
-            )
+        # Create state variables for API URL (moved from configuration section)
+        base_url = gr.State(value=default_api_base_url)
 
         with gr.Tabs(elem_classes="main-tabs"):
             # --- Research Tab ---
@@ -581,6 +570,15 @@ def create_ui():
                             lines=6,
                             elem_classes="query-input"
                         )
+                        
+                        # Session management
+                        with gr.Group():
+                            gr.Markdown("#### 💾 Session Options")
+                            session_id_input = gr.Textbox(
+                                label="Session ID (Optional)",
+                                placeholder="Enter session ID to resume previous research...",
+                                elem_classes="session-input"
+                            )
                         
                         with gr.Row():
                             max_iter = gr.Slider(
@@ -625,7 +623,7 @@ def create_ui():
 
                 start_research_btn.click(
                     fn=research,
-                    inputs=[system_msg, query, max_iter, base_url],
+                    inputs=[system_msg, query, max_iter, base_url, session_id_input],
                     outputs=[thinking_output, final_output],
                     api_name="research",
                 )
@@ -658,6 +656,11 @@ def create_ui():
                                 variant="secondary",
                                 elem_classes="view-button"
                             )
+                            resume_session_btn = gr.Button(
+                                "▶️ Resume Session", 
+                                variant="primary",
+                                elem_classes="resume-button"
+                            )
                             delete_session_btn = gr.Button(
                                 "🗑️ Delete Session", 
                                 variant="stop",
@@ -689,6 +692,12 @@ def create_ui():
                     fn=fetch_session_details,
                     inputs=[session_dropdown, base_url],
                     outputs=[session_details_json, session_status_text],
+                )
+
+                resume_session_btn.click(
+                    fn=resume_session,
+                    inputs=[session_dropdown],
+                    outputs=[session_id_input],
                 )
 
                 # Delete button workflow: delete -> update status -> refresh list
@@ -838,48 +847,128 @@ def create_ui():
                     outputs=[terminal_status_text]
                 )
 
-        # Add reload button for color scheme changes
-        with gr.Row():
-            reload_btn = gr.Button(
-                "🔄 Apply Color Scheme", 
-                variant="secondary",
-                visible=False,
-                elem_classes="reload-button"
-            )
-
-        # Color scheme change handler
-        def update_scheme_description(scheme_name):
-            """Update the scheme description and show apply button."""
-            if scheme_name in COLOR_SCHEMES:
-                desc = COLOR_SCHEMES[scheme_name]['description']
-                save_color_scheme(scheme_name)  # Save to file
+            # --- Settings Tab ---
+            with gr.TabItem("⚙️ Settings", elem_id="settings-tab"):
+                with gr.Row():
+                    with gr.Column(scale=1, elem_classes="settings-card"):
+                        gr.Markdown("### 🔧 Application Configuration")
+                        
+                        # API Configuration
+                        with gr.Group():
+                            gr.Markdown("#### 🌐 API Settings")
+                            api_url_input = gr.Textbox(
+                                label="API Base URL",
+                                value=default_api_base_url,
+                                placeholder="Enter API base URL (e.g., http://app-persist:8000/persist)",
+                                elem_classes="config-input"
+                            )
+                            
+                            update_api_btn = gr.Button(
+                                "💾 Update API URL",
+                                variant="secondary",
+                                elem_classes="update-button"
+                            )
+                        
+                        # UI Theme Configuration
+                        with gr.Group():
+                            gr.Markdown("#### 🎨 Color Theme")
+                            theme_dropdown = gr.Dropdown(
+                                label="Select Theme",
+                                choices=get_theme_choices(),
+                                value=current_theme,
+                                elem_classes="theme-dropdown"
+                            )
+                            
+                            reload_for_theme_btn = gr.Button(
+                                "🔄 Apply Theme (Reload Required)",
+                                variant="secondary",
+                                elem_classes="theme-apply-button"
+                            )
+                        
+                        # Advanced Settings
+                        with gr.Group():
+                            gr.Markdown("#### ⚙️ Advanced Settings")
+                            
+                            auto_save_sessions = gr.Checkbox(
+                                label="Auto-save research sessions",
+                                value=True,
+                                elem_classes="auto-save-checkbox"
+                            )
+                            
+                            debug_mode = gr.Checkbox(
+                                label="Enable debug mode",
+                                value=False,
+                                elem_classes="debug-checkbox"
+                            )
+                    
+                    with gr.Column(scale=2, elem_classes="output-card"):
+                        gr.Markdown("### 📊 Current Configuration")
+                        
+                        current_config_display = gr.JSON(
+                            label="Active Configuration",
+                            value={
+                                "api_url": default_api_base_url,
+                                "theme": current_theme,
+                                "auto_save": True,
+                                "debug_mode": False
+                            },
+                            elem_classes="config-json"
+                        )
+                        
+                        settings_status = gr.Textbox(
+                            label="Settings Status",
+                            value="Settings loaded successfully",
+                            interactive=False,
+                            elem_classes="status-text"
+                        )
                 
-                current_saved = get_saved_color_scheme()
-                if scheme_name != current_saved or scheme_name != "Classic Brown":
-                    gr.Info(f"🎨 Selected {scheme_name}! Click 'Apply Color Scheme' to reload with new colors.")
-                    return f"**{desc}**", gr.update(visible=True)
-                else:
-                    gr.Info(f"✨ Using {scheme_name} color scheme!")
-                    return f"**{desc}**", gr.update(visible=False)
-            return "**Select a color scheme**", gr.update(visible=False)
-        
-        def reload_with_scheme():
-            """Reload the interface with the new color scheme."""
-            gr.Info("🔄 Reloading with new color scheme...")
-            # This will cause a page reload to apply the new CSS
-            return gr.update(), gr.update(visible=False)
+                # Settings event handlers
+                def update_api_url(new_url):
+                    """Update the API URL."""
+                    if new_url.strip():
+                        # Update the state variable
+                        return new_url.strip(), f"✅ API URL updated to: {new_url.strip()}"
+                    return gr.update(), "❌ Please enter a valid API URL"
+                
+                def update_config_display(api_url, theme, auto_save, debug):
+                    """Update the configuration display."""
+                    return {
+                        "api_url": api_url,
+                        "theme": theme,
+                        "auto_save": auto_save,
+                        "debug_mode": debug,
+                        "last_updated": "Just now"
+                    }
+                
+                update_api_btn.click(
+                    fn=update_api_url,
+                    inputs=[api_url_input],
+                    outputs=[base_url, settings_status]
+                )
+                
+                # Theme change handler
+                theme_dropdown.change(
+                    fn=change_theme,
+                    inputs=[theme_dropdown],
+                    outputs=[],
+                )
+                
+                # Theme apply button (reload page)
+                reload_for_theme_btn.click(
+                    fn=lambda: gr.Info("🔄 Reloading page with new theme..."),
+                    js="() => { setTimeout(() => window.location.reload(), 1000); }"
+                )
+                
+                # Update configuration display when settings change
+                for component in [api_url_input, theme_dropdown, auto_save_sessions, debug_mode]:
+                    component.change(
+                        fn=update_config_display,
+                        inputs=[api_url_input, theme_dropdown, auto_save_sessions, debug_mode],
+                        outputs=[current_config_display]
+                    )
 
-        color_scheme.change(
-            fn=update_scheme_description,
-            inputs=[color_scheme],
-            outputs=[scheme_description, reload_btn]
-        )
-        
-        reload_btn.click(
-            fn=reload_with_scheme,
-            outputs=[scheme_description, reload_btn],
-            js="() => { setTimeout(() => window.location.reload(), 1000); }"
-        )
+        # All theme handling is now done via native Gradio themes
+        # Themes are applied on page reload for reliability
 
     return demo
 

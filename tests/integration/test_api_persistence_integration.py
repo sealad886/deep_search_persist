@@ -2,12 +2,13 @@ import asyncio
 import hashlib
 import json
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from bson import ObjectId  # Import ObjectId for mock_mongo_client queries
-from httpx import AsyncClient
+from httpx import AsyncClient, ASGITransport
 from mongomock_motor import AsyncMongoMockClient  # For mocking MongoDB
 from motor.motor_asyncio import AsyncIOMotorClient
 
@@ -15,7 +16,7 @@ from deep_search_persist.deep_search_persist.api_endpoints import app, persisten
 from deep_search_persist.deep_search_persist.helper_classes import Message, Messages
 from deep_search_persist.deep_search_persist.persistence.session_persistence import (
     SessionPersistenceManager,
-    SessionStatuses,
+    SessionStatus,
 )
 from deep_search_persist.deep_search_persist.persistence.utils import clean_dict
 from deep_search_persist.deep_search_persist.research_session import ResearchSession
@@ -68,7 +69,7 @@ async def mock_persistence_manager_fixture(mock_mongo_client):
 @pytest.fixture(name="test_client")
 async def test_client_fixture(mock_persistence_manager):
     """Provides an asynchronous test client for the FastAPI app."""
-    async with AsyncClient(app=app, base_url="http://test") as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
 
 
@@ -137,7 +138,7 @@ async def test_chat_completions_new_session(test_client, mock_persistence_manage
     # Verify session is saved in MongoDB
     saved_session_doc = await mock_persistence_manager.session_collection.find_one({"_id": ObjectId(session_id)})
     assert saved_session_doc is not None
-    assert saved_session_doc["status"] == SessionStatuses.COMPLETED.value
+    assert saved_session_doc["status"] == SessionStatus.COMPLETED.value
     assert saved_session_doc["data"]["user_query"] == user_query
     assert "The capital of France is Paris." in saved_session_doc["data"]["aggregated_data"]["final_report_content"]
     assert saved_session_doc["current_iteration"] == 1  # max_iterations was 1
@@ -148,7 +149,7 @@ async def test_list_sessions(test_client, mock_persistence_manager):
     """Test listing sessions."""
     # Create a dummy session directly in the mock DB
     session_data = ResearchSession(user_query="Dummy query", settings={}).dict()
-    session_data["status"] = SessionStatuses.COMPLETED.value
+    session_data["status"] = SessionStatus.COMPLETED.value
     session_data["created_at"] = datetime.now(timezone.utc).isoformat()
     session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     session_data["current_iteration"] = 1
@@ -170,7 +171,7 @@ async def test_list_sessions(test_client, mock_persistence_manager):
     assert len(sessions_list["sessions"]) == 1
     assert sessions_list["sessions"][0]["session_id"] == str(session_id_obj)
     assert sessions_list["sessions"][0]["user_query"] == ""  # user_query is not returned by list_sessions API endpoint
-    assert sessions_list["sessions"][0]["status"] == SessionStatuses.COMPLETED.value
+    assert sessions_list["sessions"][0]["status"] == SessionStatus.COMPLETED.value
 
 
 @pytest.mark.asyncio
@@ -180,7 +181,7 @@ async def test_get_session_success(test_client, mock_persistence_manager):
     session_id = str(uuid.uuid4())
     user_query = "Specific session query"
     session_data = ResearchSession(session_id=session_id, user_query=user_query, settings={"test": True}).dict()
-    session_data["status"] = SessionStatuses.RUNNING.value
+    session_data["status"] = SessionStatus.RUNNING.value
     session_data["created_at"] = datetime.now(timezone.utc).isoformat()
     session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     session_data["current_iteration"] = 0
@@ -199,7 +200,7 @@ async def test_get_session_success(test_client, mock_persistence_manager):
     retrieved_session = response.json()
     assert retrieved_session["session_id"] == session_id
     assert retrieved_session["user_query"] == user_query
-    assert retrieved_session["status"] == SessionStatuses.RUNNING.value
+    assert retrieved_session["status"] == SessionStatus.RUNNING.value
 
 
 @pytest.mark.asyncio
@@ -217,7 +218,7 @@ async def test_delete_session_success(test_client, mock_persistence_manager):
     # Create a dummy session directly in the mock DB
     session_id = str(uuid.uuid4())
     session_data = ResearchSession(session_id=session_id, user_query="To be deleted", settings={}).dict()
-    session_data["status"] = SessionStatuses.COMPLETED.value
+    session_data["status"] = SessionStatus.COMPLETED.value
     session_data["created_at"] = datetime.now(timezone.utc).isoformat()
     session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     session_data["current_iteration"] = 1
@@ -260,7 +261,7 @@ async def test_resume_session_success(test_client, mock_persistence_manager):
     session_id = str(uuid.uuid4())
     user_query = "Resume test query"
     session_data = ResearchSession(session_id=session_id, user_query=user_query, settings={}).dict()
-    session_data["status"] = SessionStatuses.INTERRUPTED.value
+    session_data["status"] = SessionStatus.INTERRUPTED.value
     session_data["created_at"] = datetime.now(timezone.utc).isoformat()
     session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     session_data["current_iteration"] = 1
@@ -279,7 +280,7 @@ async def test_resume_session_success(test_client, mock_persistence_manager):
     resumed_session = response.json()
     assert resumed_session["session_id"] == session_id
     assert resumed_session["user_query"] == user_query
-    assert resumed_session["status"] == SessionStatuses.INTERRUPTED.value  # Status should remain as it was loaded
+    assert resumed_session["status"] == SessionStatus.INTERRUPTED.value  # Status should remain as it was loaded
 
 
 @pytest.mark.asyncio
@@ -296,7 +297,7 @@ async def test_get_session_history_success(test_client, mock_persistence_manager
     """Test retrieving session history."""
     session_id = str(uuid.uuid4())
     session_data = ResearchSession(session_id=session_id, user_query="History test", settings={}).dict()
-    session_data["status"] = SessionStatuses.COMPLETED.value
+    session_data["status"] = SessionStatus.COMPLETED.value
     session_data["created_at"] = datetime.now(timezone.utc).isoformat()
     session_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     session_data["current_iteration"] = 2
@@ -343,13 +344,13 @@ async def test_rollback_session_success(test_client, mock_persistence_manager):
     initial_data = {
         "user_query": "Initial query",
         "settings": {},
-        "status": SessionStatuses.RUNNING.value,
+        "status": SessionStatus.RUNNING.value,
         "current_iteration": 0,
     }
     iteration_1_data = {
         "user_query": "Updated query",
         "settings": {},
-        "status": SessionStatuses.RUNNING.value,
+        "status": SessionStatus.RUNNING.value,
         "current_iteration": 1,
         "aggregated_data": {"test": "data"},
     }
@@ -359,7 +360,7 @@ async def test_rollback_session_success(test_client, mock_persistence_manager):
         "user_id": "test_user",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "status": SessionStatuses.RUNNING.value,
+        "status": SessionStatus.RUNNING.value,
         "current_iteration": 1,
         "data": iteration_1_data,
         "history": [
@@ -397,7 +398,7 @@ async def test_rollback_session_invalid_iteration(test_client, mock_persistence_
     initial_data = {
         "user_query": "Initial query",
         "settings": {},
-        "status": SessionStatuses.RUNNING.value,
+        "status": SessionStatus.RUNNING.value,
         "current_iteration": 0,
     }
     session_doc = {
@@ -405,7 +406,7 @@ async def test_rollback_session_invalid_iteration(test_client, mock_persistence_
         "user_id": "test_user",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "updated_at": datetime.now(timezone.utc).isoformat(),
-        "status": SessionStatuses.RUNNING.value,
+        "status": SessionStatus.RUNNING.value,
         "current_iteration": 0,
         "data": initial_data,
         "history": [

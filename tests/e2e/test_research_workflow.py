@@ -6,9 +6,10 @@ import re
 import httpx
 import pytest
 
-from deep_search_persist.deep_search_persist.configuration import BASE_SEARXNG_URL, DEFAULT_MODEL, OLLAMA_BASE_URL
+from deep_search_persist.deep_search_persist.configuration import app_config  # Import app_config
+# BASE_SEARXNG_URL, DEFAULT_MODEL, and OLLAMA_BASE_URL will be accessed via app_config
 from deep_search_persist.deep_search_persist.helper_classes import Message, Messages
-from deep_search_persist.deep_search_persist.persistence.session_persistence import SessionStatuses
+from deep_search_persist.deep_search_persist.persistence.session_persistence import SessionStatus
 from deep_search_persist.deep_search_persist.research_session import ResearchSession
 
 # Base URL for the FastAPI application running in Docker
@@ -84,7 +85,7 @@ async def test_e2e_full_research_workflow(e2e_test_client):
 
     found_session_summary = next((s for s in sessions_list["sessions"] if s["session_id"] == session_id), None)
     assert found_session_summary is not None, f"Session {session_id} not found in /sessions list."
-    assert found_session_summary["status"] == SessionStatuses.COMPLETED.value
+    assert found_session_summary["status"] == SessionStatus.COMPLETED.value
     # Note: user_query is not returned by list_sessions endpoint, so cannot assert here.
 
     # 3. Retrieve full session data via GET /sessions/{session_id}
@@ -95,7 +96,7 @@ async def test_e2e_full_research_workflow(e2e_test_client):
 
     assert full_session_data["session_id"] == session_id
     assert full_session_data["user_query"] == user_query
-    assert full_session_data["status"] == SessionStatuses.COMPLETED.value
+    assert full_session_data["status"] == SessionStatus.COMPLETED.value
     assert "final_report_content" in full_session_data["aggregated_data"]
     assert full_session_data["aggregated_data"]["final_report_content"] != ""
     print("Full session data retrieved and verified.")
@@ -122,7 +123,7 @@ async def test_e2e_full_research_workflow(e2e_test_client):
     assert rolled_back_session_response.status_code == 200
     rolled_back_session_data = rolled_back_session_response.json()
     assert rolled_back_session_data["current_iteration"] == 0
-    assert rolled_back_session_data["status"] == SessionStatuses.RUNNING.value  # Rolled back to running state
+    assert rolled_back_session_data["status"] == SessionStatus.RUNNING.value  # Rolled back to running state
     print("Session data verified after rollback.")
 
     # 6. Delete the session

@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 
-from .configuration import DEFAULT_MODEL, REASON_MODEL
+from .configuration import app_config
 from .helper_classes import Message, Messages
 
 
@@ -27,12 +27,12 @@ class ChatCompletionRequest(BaseModel):
     max_iterations: Optional[int] = Field(default=15, ge=1, le=50)
     max_search_items: Optional[int] = Field(default=4, ge=1, le=50)
     default_model: Optional[str] = Field(
-        default=DEFAULT_MODEL,
+        default=app_config.default_model,
         description="Override the default model from config",
         examples=["phi4-reasoning", "gemma3:4b"],
     )
     reason_model: Optional[str] = Field(
-        default=REASON_MODEL,
+        default=app_config.reason_model,
         description="Override the reason model from config",
         examples=["qwen3-14b", "qwen3-4b"],
     )
@@ -74,4 +74,3 @@ class SessionSummary(BaseModel):
 
 class SessionSummaryList(BaseModel):
     sessions: List[SessionSummary]
-    start_time: str

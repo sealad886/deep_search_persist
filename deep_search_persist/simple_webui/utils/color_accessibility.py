@@ -1,3 +1,4 @@
+from typing import Any
 from .color_convert import hex_to_rgb, rgb_to_hex, get_relative_luminance
 from .color_schemes import get_color_scheme
 
@@ -280,7 +281,7 @@ def analyze_color_scheme_accessibility(scheme_name):
         return {"error": f"Color scheme '{scheme_name}' not found"}
 
     colors = scheme["colors"]
-    analysis = {"scheme_name": scheme_name, "color_combinations": {}, "color_blind_safe": True, "overall_score": "Good"}
+    analysis: dict[str, Any] = {"scheme_name": scheme_name, "color_combinations": {}, "color_blind_safe": True, "overall_score": "Good"}
 
     # Test key color combinations
     combinations = [

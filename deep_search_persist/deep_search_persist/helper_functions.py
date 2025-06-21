@@ -3,24 +3,16 @@
 # ============================
 import asyncio
 import re
-from typing import Any, AsyncGenerator, Callable, List, Literal, Optional, Union
+from typing import Any, AsyncGenerator, Awaitable, Callable, Coroutine, List, Literal, Optional, Union
 
 import aiohttp
 from loguru import logger
 
-from .logging.logging_config import LogContext, AsyncLogContext, log_operation
+from .logging.logging_config import log_operation
 
-from .configuration import (
-    BASE_SEARXNG_URL,
-    DEFAULT_MODEL,
-    DEFAULT_MODEL_CTX,
-    REASON_MODEL,
-    REASON_MODEL_CTX,
-    USE_OLLAMA,
-    VERBOSE_WEB_PARSE,
-)
+from .configuration import app_config
 from .helper_classes import Message, Messages
-from .local_ai import call_ollama_async, call_openrouter_async, fetch_webpage_text_async, call_llm_async, call_llm_async_parse_list
+from .local_ai import call_ollama_async, fetch_webpage_text_async, call_llm_async, call_llm_async_parse_list
 
 
 @log_operation("make_initial_searching_plan", level="DEBUG")
@@ -62,7 +54,7 @@ async def make_initial_searching_plan_async(session: aiohttp.ClientSession, help
     # Convert list of dicts to Messages
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
 
-    response = await call_llm_async(session, llm_helper_messages, model=REASON_MODEL, ctx=REASON_MODEL_CTX)
+    response = await call_llm_async(session, llm_helper_messages, model=app_config.reason_model, ctx=app_config.reason_model_ctx)
     if response:
         try:
             # Remove <think>...</think> tags and their content if they exist
@@ -112,14 +104,11 @@ async def judge_search_result_and_future_plan_async(
         },
         {
             "role": "user",
-            "content": f"User Query: {user_query_str}\n"
-            f"Current Research Plan: {current_plan}\n"
-            f"Aggregated Contexts from previous searches:\n{all_contexts_str}\n\n"
-            f"{prompt}",
+            "content": f"User Query: {user_query_str}\nCurrent Research Plan: {current_plan}\nAggregated Contexts from previous searches:\n{all_contexts_str}\n\n{prompt}",
         },
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    response = await call_llm_async(session, llm_helper_messages, model=REASON_MODEL, ctx=REASON_MODEL_CTX)
+    response = await call_llm_async(session, llm_helper_messages, model=app_config.reason_model, ctx=app_config.reason_model_ctx)
     if response:
         try:
             # Remove <think>...</think> tags and their content if they exist
@@ -172,7 +161,7 @@ async def generate_writing_plan_async(
         },
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    response = await call_llm_async(session, llm_helper_messages, model=REASON_MODEL, ctx=REASON_MODEL_CTX)
+    response = await call_llm_async(session, llm_helper_messages, model=app_config.reason_model, ctx=app_config.reason_model_ctx)
     if response:
         try:
             # Remove <think>...</think> tags and their content if they exist
@@ -201,7 +190,7 @@ async def generate_search_queries_async(session: aiohttp.ClientSession, query_pl
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
     # Use the new centralized parsing method
-    queries = await call_llm_async_parse_list(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+    queries = await call_llm_async_parse_list(session, llm_helper_messages, model=app_config.default_model, ctx=app_config.default_model_ctx)
     if isinstance(queries, list):
         return queries
     else:
@@ -214,9 +203,9 @@ async def perform_search_async(session: aiohttp.ClientSession, query: str) -> Li
     """Perform a search using the provided query."""
     params = {"q": query, "format": "json"}
     try:
-        logger.debug("Initiating search request", query=query, base_url=BASE_SEARXNG_URL)
+        logger.debug("Initiating search request", query=query, base_url=app_config.base_searxng_url)
 
-        async with session.get(BASE_SEARXNG_URL, params=params) as resp:
+        async with session.get(app_config.base_searxng_url, params=params) as resp:
             if resp.status == 200:
                 results = await resp.json()
                 if "results" in results:
@@ -234,14 +223,11 @@ async def perform_search_async(session: aiohttp.ClientSession, query: str) -> Li
         logger.exception("Error during search operation", query=query, error=str(e))
         return []
 
-
-@log_operation("evaluate_page_usefulness", level="DEBUG")
 async def is_page_useful_async(
     session: aiohttp.ClientSession,
     helper_messages: Messages,
-    page_text: str,
-    page_url: str,
-) -> str:
+    page_text: str
+) -> Optional[Literal["Yes", "No"]]:
     """
     Determine if a webpage is useful for answering the user's query.
     Returns "Yes" or "No".
@@ -271,7 +257,7 @@ async def is_page_useful_async(
         },
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    response = await call_llm_async(session, llm_helper_messages, model=REASON_MODEL, ctx=REASON_MODEL_CTX)
+    response = await call_llm_async(session, llm_helper_messages, model=app_config.reason_model, ctx=app_config.reason_model_ctx)
     if response:
         answer = response.strip()
         if answer.lower() == "yes":
@@ -282,14 +268,12 @@ async def is_page_useful_async(
             return "No"  # Default to No if the response is not clear
     return "No"
 
-
 @log_operation("extract_context", level="DEBUG")
 async def extract_relevant_context_async(
     session: aiohttp.ClientSession,
     helper_messages: Messages,
     search_query: str,
-    page_text: str,
-    page_url: str,
+    page_text: str
 ) -> str:
     """
     Extract relevant context from a webpage.
@@ -328,10 +312,8 @@ async def extract_relevant_context_async(
         },
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    response = await call_llm_async(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
-    if response:
-        return response.strip()
-    return ""
+    response = await call_llm_async(session, llm_helper_messages, model=app_config.default_model, ctx=app_config.default_model_ctx)
+    return response if response else ""
 
 
 @log_operation("get_new_search_queries", level="DEBUG")
@@ -393,7 +375,7 @@ async def get_new_search_queries_async(
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
     # Use the new centralized parsing method
-    result = await call_llm_async_parse_list(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+    result = await call_llm_async_parse_list(session, llm_helper_messages, model=app_config.default_model, ctx=app_config.default_model_ctx)
     return result  # This will be either a list of strings, "<done>", or empty list
 
 
@@ -461,8 +443,7 @@ async def generate_final_report_async(
         {
             "role": "user",
             "content": (
-                f"User Query: {user_query_str}\n\n"
-                f"Gathered Relevant Contexts:\n{context_combined}"
+                f"User Query: {user_query_str}\n\nGathered Relevant Contexts:\n{context_combined}"
                 + (
                     f"\n\nWriting plan from a planning agent:\n{report_planning}"
                     if report_planning and not report_planning.startswith("Error:")
@@ -473,7 +454,7 @@ async def generate_final_report_async(
         },
     ]
     llm_helper_messages = Messages(messages=[Message(role=m["role"], content=m["content"]) for m in messages_list_dict])
-    report = await call_llm_async(session, llm_helper_messages, model=DEFAULT_MODEL, ctx=DEFAULT_MODEL_CTX)
+    report = await call_llm_async(session, llm_helper_messages, model=app_config.default_model, ctx=app_config.default_model_ctx)
     return report
 
 
@@ -510,27 +491,24 @@ async def process_link(
 
         # Create usefulness task immediately
         # is_page_useful_async now expects Messages
-        usefulness_task = asyncio.create_task(is_page_useful_async(session, helper_messages, page_text, link))
+        usefulness_task: asyncio.Task[Optional[Literal["Yes", "No"]]] = asyncio.create_task(is_page_useful_async(session, helper_messages, page_text))
 
         # Wait for usefulness check and stream its result
-        usefulness = await usefulness_task
+        usefulness: Optional[Literal["Yes", "No"]] = await usefulness_task
         status_msg = f"Page usefulness for {link}: {usefulness}\n\n"
         if create_chunk:
             yield create_chunk(status_msg)
         else:
             logger.info(status_msg.strip())
 
-        # If useful, create and wait for context task
+        # If useful, extract context directly
         if usefulness == "Yes":
             logger.debug("Page deemed useful, extracting context", link=link)
-            # Create context task only if page is useful
-            context_task = asyncio.create_task(
-                extract_relevant_context_async(session, helper_messages, search_query, page_text, link)
-            )
-            context = await context_task
+            # Extract context directly
+            context = await extract_relevant_context_async(session, helper_messages, search_query, page_text)
             if context:
                 status_msg = f"Extracted context from {link} (first 200 chars): {context[:200]}\n\n"
-                if create_chunk and VERBOSE_WEB_PARSE:
+                if create_chunk and app_config.verbose_web_parse:
                     yield create_chunk(status_msg)
                 logger.debug("Context extracted successfully", link=link, context_length=len(context))
                 context = "url:" + link + "\ncontext:" + context
@@ -622,7 +600,7 @@ async def judge_search_result_and_refine_plan_async(  # Renamed to avoid redefin
     try:
         response_parts = [
             part
-            async for part in call_ollama_async(session, llm_helper_messages, model=REASON_MODEL, ctx=REASON_MODEL_CTX)
+            async for part in call_ollama_async(llm_helper_messages, model=app_config.reason_model, ctx=app_config.reason_model_ctx)
         ]
         response_content = "".join(response_parts) if response_parts else None
 

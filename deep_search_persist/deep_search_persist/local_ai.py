@@ -1,10 +1,30 @@
+from __future__ import annotations
+
 import asyncio
-from dataclasses import dataclass
 import mimetypes
+import sys
 import time
 from collections import defaultdict
-from typing import Any, AsyncGenerator, DefaultDict, List, Literal, LiteralString, Optional, Union  # Added AsyncGenerator, Union, Optional
+from collections.abc import AsyncGenerator
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Optional, TypeVar, Union, Literal, List
 from urllib.parse import urlparse
+
+if sys.version_info >= (3, 12):
+    from typing import override
+else:
+    from typing_extensions import override  # type: ignore[no-redef]
+
+from docling.datamodel.document import ConversionResult
+
+# Type variable for generic return types
+T = TypeVar('T')
+
+# Type checking imports
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+    from playwright.async_api import Page, Download
 
 import aiohttp  # Added for type hinting
 import anyio  # Added for anyio.sleep
@@ -14,31 +34,7 @@ from ollama import AsyncClient
 from playwright.async_api import async_playwright
 from pydantic import BaseModel  # type: ignore
 
-from .configuration import (
-    BROWSE_LITE,
-    CHROME_HOST_IP,
-    CHROME_PORT,
-    CONCURRENT_LIMIT,
-    COOL_DOWN,
-    DEFAULT_MODEL,
-    DEFAULT_MODEL_CTX,
-    FALLBACK_MODEL,
-    JINA_API_KEY,
-    JINA_BASE_URL,
-    MAX_EVAL_TIME,
-    MAX_HTML_LENGTH,
-    OLLAMA_BASE_URL,
-    OPENAI_COMPAT_API_KEY,
-    OPENAI_URL,
-    PDF_MAX_FILESIZE,
-    PDF_MAX_PAGES,
-    REQUEST_PER_MINUTE,
-    TEMP_PDF_DIR,
-    TIMEOUT_PDF,
-    USE_EMBED_BROWSER,
-    USE_JINA,
-    USE_OLLAMA,
-)
+from .configuration import app_config
 from .helper_classes import Message, Messages
 from .logging.logging_config import log_operation
 from .llm_providers import LLMProviderFactory
@@ -47,24 +43,45 @@ from .llm_providers import LLMProviderFactory
 OPERATION_WAIT_TIME = 1
 
 # Global semaphore for concurrency control
-global global_semaphore
-global_semaphore = asyncio.Semaphore(CONCURRENT_LIMIT)
-domain_locks: DefaultDict[str, asyncio.Lock] = defaultdict(asyncio.Lock)  # domain -> asyncio.Lock
-domain_next_allowed_time: DefaultDict[str, float] = defaultdict(lambda: 0.0)  # domain -> float (epoch time)
-openrouter_last_request_times: list = []  # Initialize for rate limiting
+global_semaphore: Optional[asyncio.Semaphore] = None
+
+def get_global_semaphore() -> asyncio.Semaphore:
+    """Initializes and returns the global semaphore."""
+    global global_semaphore
+    if global_semaphore is None:
+        logger.debug("Initializing global_semaphore", concurrent_limit=app_config.concurrent_limit)
+        global_semaphore = asyncio.Semaphore(app_config.concurrent_limit)
+    assert global_semaphore is not None, "Global semaphore should be initialized here"
+    return global_semaphore
+
+# Domain-based rate limiting
+domain_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)  # domain -> asyncio.Lock
+domain_next_allowed_time: dict[str, float] = defaultdict(float)  # domain -> float (epoch time)
+openrouter_last_request_times: list[float] = []  # Track request times for rate limiting
 
 # Global lock for PDF processing
 pdf_processing_lock = asyncio.Lock()
 
 
 @dataclass
-class OllamaArgs(dict):
+class OllamaArgs:
+    """Configuration for Ollama API requests.
+
+    Attributes:
+        model: The model to use for the request.
+        max_tokens: Maximum number of tokens to generate (0 for no limit).
+        ctx: Context window size in tokens (None for default).
+    """
     model: str
     max_tokens: int = 0
-    ctx: Optional[int] = None
-    
+    ctx: int | None = None
+
+    @override  # type: ignore[misc, unused-ignore]
     def __repr__(self) -> str:
-        return f"<OllamaArgs model={self.model} max_tokens={self.max_tokens} ctx={self.ctx}>"
+        """Return a string representation of the OllamaArgs instance."""
+        return f"<OllamaArgs model={self.model!r} max_tokens={self.max_tokens} ctx={self.ctx}>"
+
+
 
 
 # ----------------------
@@ -81,18 +98,18 @@ async def call_llm_async(
     """Call the LLM with the provided messages and return the response."""
     try:
         max_tokens = max_tokens_override if max_tokens_override is not None else 20000
-        
+
         logger.debug(
             "Initiating LLM call",
             model=model,
             message_count=len(messages),
-            use_ollama=USE_OLLAMA,
+            llm_provider=app_config.llm_provider,
             force_ollama=force_ollama,
             max_tokens=max_tokens,
         )
 
-        if force_ollama or USE_OLLAMA:
-            # Use the new Ollama provider
+        if force_ollama or app_config.llm_provider == "ollama":
+            # Use the Ollama provider
             provider = LLMProviderFactory.get_ollama_provider()
             response = await provider.generate(messages, model, max_tokens, ctx)
             logger.debug(
@@ -100,7 +117,16 @@ async def call_llm_async(
                 model=model,
                 response_length=len(response) if response else 0,
             )
-        elif not USE_OLLAMA and not force_ollama:
+        elif app_config.llm_provider == "lmstudio":
+            # Use the LMStudio provider
+            provider = LLMProviderFactory.get_lmstudio_provider()
+            response = await provider.generate(messages, model, max_tokens, ctx, session=session)
+            logger.debug(
+                "LMStudio call completed",
+                model=model,
+                response_length=len(response) if response else 0,
+            )
+        elif app_config.llm_provider == "openai_compatible":
             # Use the OpenAI-compatible provider
             provider = LLMProviderFactory.get_openai_provider()
             response = await provider.generate(messages, model, max_tokens, ctx, session=session)
@@ -112,7 +138,7 @@ async def call_llm_async(
         else:
             logger.error(
                 "LLM call routing error",
-                use_ollama=USE_OLLAMA,
+                llm_provider=app_config.llm_provider,
                 force_ollama=force_ollama,
                 model=model,
             )
@@ -132,31 +158,41 @@ async def call_llm_async_parse_list(
     ctx: int,
     max_tokens_override: Optional[int] = None,
     force_ollama: bool = False,
-) -> Union[List[str], Literal["<done>"], List]:
+) -> Union[List[str], Literal["<done>"], List[Any]]:
     """Call the LLM and parse the response as a Python list."""
     try:
         max_tokens = max_tokens_override if max_tokens_override is not None else 20000
-        
+
         logger.debug(
             "Initiating LLM call for list parsing",
             model=model,
             message_count=len(messages),
-            use_ollama=USE_OLLAMA,
+            llm_provider=app_config.llm_provider,
             force_ollama=force_ollama,
             max_tokens=max_tokens,
         )
 
-        if force_ollama or USE_OLLAMA:
-            # Use the new Ollama provider
+        if force_ollama or app_config.llm_provider == "ollama":
+            # Use the Ollama provider
             provider = LLMProviderFactory.get_ollama_provider()
-            result = await provider.generate_and_parse_list(messages, model, max_tokens, ctx)
+            result = await provider.generate_and_parse_list(messages, model, max_tokens, ctx, session=session)
             logger.debug(
                 "Ollama list parsing completed",
                 model=model,
                 result_type=type(result).__name__,
                 result_length=len(result) if isinstance(result, list) else 1,
             )
-        elif not USE_OLLAMA and not force_ollama:
+        elif app_config.llm_provider == "lmstudio":
+            # Use the LMStudio provider
+            provider = LLMProviderFactory.get_lmstudio_provider()
+            result = await provider.generate_and_parse_list(messages, model, max_tokens, ctx, session=session)
+            logger.debug(
+                "LMStudio list parsing completed",
+                model=model,
+                result_type=type(result).__name__,
+                result_length=len(result) if isinstance(result, list) else 1,
+            )
+        elif app_config.llm_provider == "openai_compatible":
             # Use the OpenAI-compatible provider
             provider = LLMProviderFactory.get_openai_provider()
             result = await provider.generate_and_parse_list(messages, model, max_tokens, ctx, session=session)
@@ -169,7 +205,7 @@ async def call_llm_async_parse_list(
         else:
             logger.error(
                 "LLM call routing error",
-                use_ollama=USE_OLLAMA,
+                llm_provider=app_config.llm_provider,
                 force_ollama=force_ollama,
                 model=model,
             )
@@ -186,7 +222,7 @@ async def call_llm_async_parse_list(
 async def call_openrouter_async(
     session: aiohttp.ClientSession,  # Added type hint
     messages: Messages,
-    model: str = DEFAULT_MODEL,  # Explicitly type model
+    model: str = app_config.default_model,  # Explicitly type model
     is_fallback: bool = False,  # Explicitly type is_fallback
 ) -> Optional[str]:  # Added return type hint
     """
@@ -203,12 +239,12 @@ async def call_openrouter_async(
     """
     global openrouter_last_request_times
     # Apply rate limiting only for DEFAULT_MODEL and when REQUEST_PER_MINUTE is set
-    if model == DEFAULT_MODEL and REQUEST_PER_MINUTE > 0:
+    if model == app_config.default_model and app_config.request_per_minute > 0:
         current_time = time.time()
         # Remove requests older than 60 seconds
         openrouter_last_request_times = [t for t in openrouter_last_request_times if current_time - t < 60]
 
-        if len(openrouter_last_request_times) >= REQUEST_PER_MINUTE:
+        if len(openrouter_last_request_times) >= app_config.request_per_minute:
             # Wait until we can make another request
             oldest_time = openrouter_last_request_times[0]
             wait_time = 60 - (current_time - oldest_time)
@@ -219,7 +255,7 @@ async def call_openrouter_async(
         openrouter_last_request_times.append(current_time)
 
     headers = {
-        "Authorization": f"Bearer {OPENAI_COMPAT_API_KEY}",
+        "Authorization": f"Bearer {app_config.openai_compat_api_key}",
         "X-Title": "OpenDeepResearcher, by Matt Shumer and Benhao Tang",
         "Content-Type": "application/json",
     }
@@ -228,24 +264,24 @@ async def call_openrouter_async(
         "messages": messages.to_openai_format(),  # Use to_openai_format()
     }
     try:
-        async with session.post(OPENAI_URL, headers=headers, json=payload) as resp:
+        async with session.post(app_config.openai_url, headers=headers, json=payload) as resp:
             if resp.status == 200:
                 result = await resp.json()
                 try:
                     content = result["choices"][0]["message"]["content"]
                     # If content is empty and not using fallback, retry with fallback model
                     if (not content or content.strip() == "") and not is_fallback:
-                        print(f"Empty response from model, retrying with fallback model: {FALLBACK_MODEL}")
-                        return await call_openrouter_async(session, messages, model=FALLBACK_MODEL, is_fallback=True)
+                        logger.warning(f"Empty response from model, retrying with fallback model: {app_config.fallback_model_config}")
+                        return await call_openrouter_async(session, messages, model=app_config.fallback_model_config, is_fallback=True)
                     return content
                 except (KeyError, IndexError) as e:  # Conventional unused variable
                     error_msg = f"Unexpected OpenRouter/OpenAI compatible response structure: {result}"
-                    print(error_msg)
+                    logger.error(error_msg)
                     return f"Error: {e}: {error_msg}"
             else:
                 text = await resp.text()
                 error_msg = f"OpenRouter/OpenAI compatible API error: {resp.status} - {text}"
-                print(error_msg)
+                logger.error(error_msg)
                 # Check if this is a rate limit error and we're using the default model and not already a fallback
                 rate_limit_phrases = [
                     "rate limit",
@@ -259,18 +295,19 @@ async def call_openrouter_async(
                     "max_tokens",
                 ]
                 if not is_fallback and any(phrase in text.lower() for phrase in rate_limit_phrases):
-                    print(f"Rate limit/Context length hit, retrying with fallback model: {FALLBACK_MODEL}")
+                    logger.warning(f"Rate limit/Context length hit, retrying with fallback model: {app_config.fallback_model_config}")
                     # Retry with fallback model, marking as fallback to prevent recursion
-                    return await call_openrouter_async(session, messages, model=FALLBACK_MODEL, is_fallback=True)
+                    return await call_openrouter_async(session, messages, model=app_config.fallback_model_config, is_fallback=True)
                 if is_fallback and any(phrase in text.lower() for phrase in rate_limit_phrases):
                     error_msg = (
                         "Rate limit hit/Context length hit even for fallback model, "
                         "consider choosing a model with larger context length as fallback "
                         "or other models/services."
                     )
+                    logger.error(error_msg)
                 return f"Error: {error_msg}"
     except Exception as e:
-        print("Error calling OpenRouter/OpenAI compatible API:", e)
+        logger.exception("Error calling OpenRouter/OpenAI compatible API")
         return None
 
 
@@ -279,9 +316,8 @@ async def call_openrouter_async(
 # --------------------------
 # Note: Ollama functionality has been moved to llm_providers.py for better extensibility
 async def call_ollama_async(
-    session: aiohttp.ClientSession,  # Added type hint
     messages: Messages,
-    model: str = DEFAULT_MODEL,
+    model: str = app_config.default_model,
     max_tokens: int = 20000,
     ctx: int = 0,
 ) -> AsyncGenerator[str, None]:  # Added return type hint
@@ -300,7 +336,7 @@ async def call_ollama_async(
     """
 
     # Ensure OLLAMA_BASE_URL is a valid URL (with scheme, and NO trailing /v1)
-    base_url = OLLAMA_BASE_URL
+    base_url = app_config.ollama_base_url
     # Remove trailing /v1 if present (Ollama expects just host:port)
     if base_url.endswith("/v1"):
         base_url = base_url[:-3]
@@ -333,7 +369,15 @@ async def call_ollama_async(
         # If an error occurs during streaming, it will be raised and handled by the caller.
 
 
-def is_pdf_url(url):
+def is_pdf_url(url: str) -> bool:
+    """Check if the given URL points to a PDF file.
+
+    Args:
+        url: The URL to check.
+
+    Returns:
+        bool: True if the URL points to a PDF, False otherwise.
+    """
     parsed_url = urlparse(url)
     if parsed_url.path.lower().endswith(".pdf"):
         return True
@@ -341,15 +385,23 @@ def is_pdf_url(url):
     return mime_type == "application/pdf"
 
 
-def get_domain(url):
+def get_domain(url: str) -> str:
+    """Extract the domain from a URL.
+
+    Args:
+        url: The URL to extract the domain from.
+
+    Returns:
+        str: The lowercase domain name or an empty string if no domain found.
+    """
     parsed = urlparse(url)
     # Use .hostname to exclude port and userinfo, then convert to lower
-    # If hostname is None (e.g. for mailto: links or relative paths), return empty string or handle as error
+    # If hostname is None (e.g. for mailto: links or relative paths), return empty string
     hostname = parsed.hostname
     return hostname.lower() if hostname else ""
 
 
-async def process_pdf(pdf_path):
+async def process_pdf(pdf_path: Path | str) -> Union[ConversionResult, str]:
     """
     Converts a local PDF file to text using Docling.
     Ensures only one PDF processing task runs at a time to prevent GPU OutOfMemoryError.
@@ -362,66 +414,69 @@ async def process_pdf(pdf_path):
     converter = DocumentConverter()
 
     async def docling_task():
-        return converter.convert(str(pdf_path), max_num_pages=PDF_MAX_PAGES, max_file_size=PDF_MAX_FILESIZE)
+        return converter.convert(str(pdf_path), max_num_pages=app_config.pdf_max_pages, max_file_size=app_config.pdf_max_filesize)
 
     # Ensure no other async task runs while processing the PDF
     async with pdf_processing_lock:
         try:
-            with anyio.fail_after(TIMEOUT_PDF):  # Replaced asyncio.wait_for
+            with anyio.fail_after(app_config.timeout_pdf):  # Replaced asyncio.wait_for
                 return await docling_task()
         except TimeoutError:  # anyio.fail_after raises TimeoutError (from anyio.exceptions)
             return "Parser unable to parse the resource within defined time."
 
 
-async def download_pdf(page, url):
+async def download_pdf(page: 'Page', url: str) -> Optional[Path]:
     """
     Downloads a PDF from a webpage using Playwright and saves it locally.
 
     Args:
         page: The Playwright page object.
         url: The URL of the PDF to download.
+
     Returns:
-        The path to the saved PDF file or None if an error occurs.
+        Optional[Path]: The path to the saved PDF file or None if an error occurs.
+
+    Raises:
+        TimeoutError: If the download takes longer than the specified timeout.
+        Exception: For any other errors that occur during the download.
     """
-    pdf_filename = TEMP_PDF_DIR / f"{hash(url)}.pdf"
-
-    async def intercept_request(request):
-        """Intercepts request to log PDF download attempts."""
-        # Create Session instance
-        # TODO: Need to pass session details properly here
-        # session_instance = ResearchSession(user_query, system_instruction, settings)
-        # session_instance.save_session(SESSIONS_DIR / f"{session_instance.session_id}.json")
-
-        if request.resource_type == "document":
-            print(f"Downloading PDF: {request.url}")
-
-    # Attach the request listener
-    page.on("request", intercept_request)
-
     try:
-        await page.goto(url, timeout=30000)  # 30 seconds timeout
-        await page.wait_for_load_state("networkidle")
-
-        # Attempt to save PDF (works for direct links)
-        await page.pdf(path=str(pdf_filename))
-        return pdf_filename
-
+        async with page.expect_download(timeout=30000) as download_info:  # 30 second timeout
+            logger.info(f"Downloading PDF: {url}")
+            _ = await page.goto(url, timeout=30000)  # 30 second timeout
+            download = await download_info.value
+            # Create a unique filename for the downloaded file
+            filename = f"downloaded_{int(time.time())}.pdf"
+            filepath = Path("/tmp") / filename
+            await download.save_as(filepath)
+            return filepath
+    except TimeoutError as te:
+        logger.error(f"Timeout while downloading PDF {url}: {te}")
+        return None
     except Exception as e:
-        print(f"Error downloading PDF {url}: {e}")
+        logger.error(f"Error downloading PDF {url}: {e}")
         return None
 
 
-async def get_cleaned_html(page):
-    """
-    Extracts cleaned HTML from a page while enforcing a timeout.
+async def get_cleaned_html(page: 'Page') -> str:
+    """Extract and clean HTML content from a Playwright page.
+
+    This function extracts the HTML content from a Playwright page, removes unnecessary
+    elements (scripts, styles, etc.), and returns a cleaned version of the HTML.
+    The operation is wrapped in a timeout to prevent hanging.
 
     Args:
-        page: The Playwright page object.
+        page: The Playwright page object to extract HTML from.
+
     Returns:
-        The cleaned HTML content or an error message if extraction fails.
+        str: The cleaned HTML content as a string, or an error message if extraction fails.
+
+    Raises:
+        TimeoutError: If the HTML extraction takes longer than MAX_EVAL_TIME.
+        Exception: For any other errors that occur during HTML extraction.
     """
     try:
-        with anyio.fail_after(MAX_EVAL_TIME):  # Replaced asyncio.wait_for
+        with anyio.fail_after(app_config.max_eval_time):  # Replaced asyncio.wait_for
             cleaned_html = await page.evaluate(
                 """
                 () => {
@@ -442,27 +497,38 @@ async def get_cleaned_html(page):
         return "Parser unable to extract HTML within defined time."
 
 
-async def fetch_webpage_text_async(session, url):
-    """# Added docstring
-    Asynchronously fetches the text content of a webpage using Playwright or Jina.
-    If the URL is a PDF, it downloads and processes the PDF using Docling.
-    If the URL is a webpage, it uses Playwright to fetch the HTML and processes it using Ollama.
-    Respects concurrency limits and per-domain cooldown.
+async def fetch_webpage_text_async(session: aiohttp.ClientSession, url: str) -> str:
+    """Asynchronously fetch and process web content from a given URL.
+
+    This function handles different types of web content:
+    - PDF files: Downloads and processes using Docling
+    - Web pages: Fetches HTML and processes using Playwright and Ollama
+    - Respects concurrency limits and domain cooldowns
+
+    The function first checks if Jina is enabled (USE_JINA) and uses it for fetching.
+    If Jina is not enabled or fails, it falls back to Playwright.
 
     Args:
-        session: The aiohttp session object.
-        url: The URL of the webpage to fetch.
+        session: An aiohttp ClientSession for making HTTP requests.
+        url: The URL of the webpage or PDF to fetch.
+
     Returns:
-        The text content of the webpage or an error message string if fetching fails.
+        str: The extracted text content of the webpage/PDF, or an error message
+             if the fetch/processing fails.
+
+    Raises:
+        asyncio.TimeoutError: If any operation exceeds the maximum allowed time.
+        aiohttp.ClientError: For HTTP request related errors.
+        Exception: For any other unexpected errors during processing.
     """
 
-    if USE_JINA:
+    if app_config.use_jina:
         """
         Asynchronously retrieve the text content of a webpage using Jina.
         The URL is appended to the Jina endpoint.
         """
-        full_url = f"{JINA_BASE_URL}{url}"
-        headers = {"Authorization": f"Bearer {JINA_API_KEY}"}
+        full_url = f"{app_config.jina_base_url}{url}"
+        headers = {"Authorization": f"Bearer {app_config.jina_api_key}"}
         try:
             async with session.get(full_url, headers=headers) as resp:
                 if resp.status == 200:
@@ -487,7 +553,7 @@ async def fetch_webpage_text_async(session, url):
         """
         domain = get_domain(url)
 
-        async with global_semaphore:  # Global concurrency limit
+        async with get_global_semaphore():  # Global concurrency limit
             async with domain_locks[domain]:  # Ensure only one request per domain at a time
                 now = time.time()
                 if now < domain_next_allowed_time[domain]:
@@ -497,7 +563,7 @@ async def fetch_webpage_text_async(session, url):
                 async with async_playwright() as p:
                     # Attempt to connect to an already running Chrome instance
                     try:
-                        if USE_EMBED_BROWSER:
+                        if app_config.use_embed_browser:
                             user_agent = (
                                 "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
                                 "(KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
@@ -508,12 +574,12 @@ async def fetch_webpage_text_async(session, url):
                                 firefox_user_prefs={"general.useragent.override": user_agent},
                             )
                         else:
-                            browser = await p.chromium.connect_over_cdp(f"{CHROME_HOST_IP}:{CHROME_PORT}")
+                            browser = await p.chromium.connect_over_cdp(f"{app_config.chrome_host_ip}:{app_config.chrome_port}")
                     except Exception as e:
-                        if USE_EMBED_BROWSER:
+                        if app_config.use_embed_browser:
                             error_msg = "Failed to launch browser"
                         else:
-                            error_msg = f"Failed to connect to Chrome on port {CHROME_PORT}"
+                            error_msg = f"Failed to connect to Chrome on port {app_config.chrome_port}"
                         logger.error(f"Playwright connection error: {error_msg}", error=str(e))
                         return error_msg
 
@@ -522,7 +588,7 @@ async def fetch_webpage_text_async(session, url):
 
                     # PDFs
                     if is_pdf_url(url):
-                        if BROWSE_LITE:
+                        if app_config.browse_lite:
                             result = "PDF parsing is disabled in lite browsing mode."
                         else:
                             pdf_path = await download_pdf(page, url)
@@ -539,7 +605,7 @@ async def fetch_webpage_text_async(session, url):
                         try:
                             await page.goto(url, timeout=30000)  # 30 seconds timeout to wait for loading
                             title = await page.title() or "Untitled Page"
-                            if BROWSE_LITE:
+                            if app_config.browse_lite:
                                 # Extract main content using JavaScript inside Playwright
                                 main_content = await page.evaluate(
                                     """
@@ -554,14 +620,14 @@ async def fetch_webpage_text_async(session, url):
                                 # Clean HTML before sending to reader-lm
                                 cleaned_html = await get_cleaned_html(page)
                                 # Enforce a Maximum length for a webpage
-                                cleaned_html = cleaned_html[:MAX_HTML_LENGTH]
+                                cleaned_html = cleaned_html[:app_config.max_html_length]
                                 helper_messages_for_reader = Messages(
                                     messages=[
                                         Message(role="user", content=cleaned_html),
                                     ]
                                 )
                                 # Don't get stuck when exceed reader-lm ctx
-                                ollama_max_tokens = int(1.25 * MAX_HTML_LENGTH)
+                                ollama_max_tokens = int(1.25 * app_config.max_html_length)
                                 # Use the enhanced call_llm_async
                                 markdown_text = await call_llm_async(
                                     session=session,
@@ -584,6 +650,6 @@ async def fetch_webpage_text_async(session, url):
                     await browser.close()
 
                 # Update next allowed time for this domain (cool down time per domain)
-                domain_next_allowed_time[domain] = time.time() + COOL_DOWN
+                domain_next_allowed_time[domain] = time.time() + app_config.cool_down
 
         return result

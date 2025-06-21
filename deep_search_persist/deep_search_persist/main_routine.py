@@ -1,14 +1,13 @@
 import asyncio
 import time
-from typing import Any, AsyncGenerator, Callable, Coroutine, List, Literal, Optional, Union, overload
+from typing import Any, AsyncGenerator, Callable, List, Literal, Optional, Union, overload
 
 import aiohttp
 import anyio
 from loguru import logger
 
-from . import configuration
+from .configuration import app_config
 from .api_models import ChatCompletionChunk
-from .configuration import OPERATION_WAIT_TIME, USE_JINA, WITH_PLANNING
 from .helper_classes import Message, Messages
 from .helper_functions import (
     generate_final_report_async,
@@ -19,8 +18,9 @@ from .helper_functions import (
     make_initial_searching_plan_async,
     perform_search_async,
     process_link,
+    extract_relevant_context_async,  # Added
+    is_page_useful_async,  # Added
 )
-from .logging.logging_config import LogContext
 
 
 # Helper function to create chunks for streaming
@@ -48,7 +48,7 @@ async def process_link_wrapper(
         async for chunk in process_link(session, link, messages, search_query, create_chunk):
             result.append(chunk)
     except Exception as e:
-        logger.exception(f"Error in process_link_wrapper", link=link, error=str(e))
+        logger.exception("Error in process_link_wrapper", link=link, error=str(e))
         result.clear()  # TODO: Consider returning the partial result if available
     finally:
         return result
@@ -78,7 +78,7 @@ async def generate_research_response_streaming(
 
     async with aiohttp.ClientSession() as session:
         # Initial research plan
-        if WITH_PLANNING:
+        if app_config.with_planning:
             logger.debug("Generating initial research plan")
             # Use messages object here
             research_plan = await make_initial_searching_plan_async(session, messages)
@@ -116,11 +116,11 @@ async def generate_research_response_streaming(
 
             # Perform searches
             iteration_contexts = []
-            search_tasks = [asyncio.create_task(perform_search_async(session, query)) for query in new_search_queries]
+            search_tasks = [perform_search_async(session, query) for query in new_search_queries]
             full_search_results = await asyncio.gather(*search_tasks)
 
             # ... (rest of search result processing - same for both modes)
-            if not USE_JINA:
+            if not app_config.use_jina:
                 search_results = [result[:max_search_items] for result in full_search_results]
                 logger.debug("Limiting search results", max_items=max_search_items)
             else:
@@ -148,7 +148,7 @@ async def generate_research_response_streaming(
                 try:
                     result = await completed_task  # This is now a list of chunks from the wrapper
                     for chunk in result:
-                        if isinstance(chunk, str) and chunk.startswith("url:"):
+                        if chunk.startswith("url:"):
                             iteration_contexts.append(chunk)
                         else:
                             yield chunk  # Yield status updates/chunks
@@ -168,7 +168,7 @@ async def generate_research_response_streaming(
 
             # Check if we should continue
             if iteration + 1 < iteration_limit:
-                if WITH_PLANNING:
+                if app_config.with_planning:
                     # Use messages object here
                     new_research_plan = await judge_search_result_and_refine_plan_async(
                         session,
@@ -208,15 +208,15 @@ async def generate_research_response_streaming(
 
             iteration += 1
             # Add delay if needed (same for both modes)
-            if OPERATION_WAIT_TIME > 0:
-                logger.debug("Adding operation wait time", seconds=OPERATION_WAIT_TIME)
-                await anyio.sleep(OPERATION_WAIT_TIME)
+            if app_config.operation_wait_time > 0:
+                logger.debug("Adding operation wait time", seconds=app_config.operation_wait_time)
+                await anyio.sleep(app_config.operation_wait_time)
 
         # Generate final report
         yield create_chunk("\n</think>\n\n")  # Close think tag before final report
 
         logger.info("Generating final report")
-        if WITH_PLANNING:
+        if app_config.with_planning:
             logger.debug("Creating writing plan for final report")
             # Use messages object here
             final_report_planning = await generate_writing_plan_async(session, messages, "\n".join(aggregated_contexts))
@@ -280,7 +280,7 @@ async def generate_research_response_non_streaming(
 
     async with aiohttp.ClientSession() as session:
         # Initial research plan
-        if WITH_PLANNING:
+        if app_config.with_planning:
             # Use messages object here
             research_plan = await make_initial_searching_plan_async(session, messages)
             # Handle potential list return from make_initial_searching_plan_async
@@ -305,11 +305,11 @@ async def generate_research_response_non_streaming(
         while iteration < iteration_limit:
             # Perform searches
             iteration_contexts = []
-            search_tasks = [asyncio.create_task(perform_search_async(session, query)) for query in new_search_queries]
+            search_tasks = [perform_search_async(session, query) for query in new_search_queries]
             full_search_results = await asyncio.gather(*search_tasks)
 
             # ... (rest of search result processing - same for both modes)
-            if not USE_JINA:
+            if not app_config.use_jina:
                 search_results = [result[:max_search_items] for result in full_search_results]
             else:
                 search_results = full_search_results
@@ -343,7 +343,7 @@ async def generate_research_response_non_streaming(
 
             # Check if we should continue
             if iteration + 1 < iteration_limit:
-                if WITH_PLANNING:
+                if app_config.with_planning:
                     # Use messages object here
                     new_research_plan = await judge_search_result_and_refine_plan_async(
                         session,
@@ -374,11 +374,11 @@ async def generate_research_response_non_streaming(
 
             iteration += 1
             # Add delay if needed (same for both modes)
-            if OPERATION_WAIT_TIME > 0:
-                await anyio.sleep(OPERATION_WAIT_TIME)
+            if app_config.operation_wait_time > 0:
+                await anyio.sleep(app_config.operation_wait_time)
 
         # Generate final report
-        if WITH_PLANNING:
+        if app_config.with_planning:
             # Use messages object here
             final_report_planning = await generate_writing_plan_async(session, messages, "\n".join(aggregated_contexts))
         else:
@@ -460,20 +460,20 @@ async def async_main(
     stream: bool = False,
     default_model: Optional[str] = None,
     reason_model: Optional[str] = None,
-) -> str | AsyncGenerator[str, None]:
+) -> Union[str, AsyncGenerator[str, None]]:
     """Main entry point that handles both streaming and non-streaming modes"""
     if stream:
 
         async def streaming_wrapper() -> AsyncGenerator[str, None]:
             # Save original configuration values
-            original_default = configuration.DEFAULT_MODEL
-            original_reason = configuration.REASON_MODEL
+            original_default = app_config.default_model
+            original_reason = app_config.reason_model
 
             # Override configuration with provided parameters
             if default_model:
-                configuration.DEFAULT_MODEL = default_model
+                app_config.default_model = default_model
             if reason_model:
-                configuration.REASON_MODEL = reason_model
+                app_config.reason_model = reason_model
 
             try:
                 # Get the async generator from generate_research_response
@@ -490,20 +490,20 @@ async def async_main(
                     yield chunk
             finally:
                 # Restore original configuration values after generator completes
-                configuration.DEFAULT_MODEL = original_default
-                configuration.REASON_MODEL = original_reason
+                app_config.default_model = original_default
+                app_config.reason_model = original_reason
 
         return streaming_wrapper()
     else:
         # Handle non-streaming mode with try/finally
-        original_default = configuration.DEFAULT_MODEL
-        original_reason = configuration.REASON_MODEL
+        original_default = app_config.default_model
+        original_reason = app_config.reason_model
 
         # Override configuration if parameters are provided
         if default_model:
-            configuration.DEFAULT_MODEL = default_model
+            app_config.default_model = default_model
         if reason_model:
-            configuration.REASON_MODEL = reason_model
+            app_config.reason_model = reason_model
 
         try:
             # Since generate_research_response is async, await its call.
@@ -518,11 +518,18 @@ async def async_main(
             return response
         finally:
             # Restore original configuration values
-            configuration.DEFAULT_MODEL = original_default
-            configuration.REASON_MODEL = original_reason
+            app_config.default_model = original_default
+            app_config.reason_model = original_reason
 
 
 __all__ = [
     "async_main",
     "generate_research_response",
+    "extract_relevant_context_async",
+    "generate_search_queries_async",
+    "generate_writing_plan_async",
+    "is_page_useful_async",
+    "judge_search_result_and_refine_plan_async",
+    "make_initial_searching_plan_async",
+    "perform_search_async",
 ]

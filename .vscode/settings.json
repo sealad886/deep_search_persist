@@ -20,6 +20,5 @@
         "**/docs/_build",
         "**/htmlcov"
     ],
-    "python-envs.pythonProjects": [],
-    "python.languageServer": "Jedi"
+    "python-envs.pythonProjects": []
 }

@@ -8,4 +8,5 @@ mypy
 types-requests
 pandas-stubs
 flake8
--r ./requirements/requirements-web.txt
+hypothesis
+-r requirements-webui.txt

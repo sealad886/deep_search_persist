@@ -9,7 +9,8 @@ import time
 from abc import ABCMeta
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any, Callable, ClassVar, Dict, List, Literal, MutableSequence, Optional, Tuple, TypeAlias, Union
+from typing import Any, Callable, ClassVar, Dict, Iterable, List, Literal, MutableSequence, Optional, Tuple
+from typing_extensions import TypeAlias
 
 from bson import ObjectId
 from loguru import logger
@@ -48,6 +49,7 @@ class SessionSummary(BaseModel):
     status_types: ClassVar[type[SessionStatus]] = SessionStatus  # Assign the Enum class
 
     session_id: str
+    user_query: Optional[str] = None
     user_id: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -63,11 +65,11 @@ class SessionSummaryList(BaseModel):
 
     def __getattribute__(self, name: str) -> Any:
         return super().__getattribute__(name)
-    
+
     def __deepcopy__(self, memo: Optional[Dict[int, Any]] = None) -> Self:
         import copy
         return copy.deepcopy(self, memo)
-    
+
     def __copy__(self) -> Self:
         return self.__deepcopy__()
 
@@ -75,12 +77,12 @@ class SessionSummaryList(BaseModel):
         if not isinstance(value, SessionSummaryList):
             return False
         return self.sessions == value.sessions
-    
+
     def __setattr__(self, name: str, value: Any) -> None:
         super().__setattr__(name, value)
 
     def __func_datetime(
-        self, internal_param_name: Literal["_start_time", "_end_time"], func: Callable
+        self, internal_param_name: Literal["_start_time", "_end_time"], func: Callable[[Iterable[datetime]], datetime]
     ) -> Optional[datetime]:
         if not hasattr(self, internal_param_name):
             logger.critical("Development bug. Please report.")
@@ -132,14 +134,14 @@ class SessionSummaryList(BaseModel):
 # --- Main Persistence Manager ---
 class SessionPersistenceManager:
 
-    client: AsyncIOMotorClient
-    db: AsyncIOMotorDatabase
+    client: AsyncIOMotorClient[Any]
+    db: AsyncIOMotorDatabase[Any]
     _session_summaries: Optional[SessionSummaryList] = None  # Private with type hint
 
     def __init__(self, mongo_uri: str, db_name: str = "deep_search"):
         logger.debug("Initializing SessionPersistenceManager", db_name=db_name)
         self.client = AsyncIOMotorClient(mongo_uri)
-        self.db: AsyncIOMotorDatabase = self.client[db_name]
+        self.db: AsyncIOMotorDatabase[Any] = self.client[db_name]
         self.session_collection = self.db["sessions"]
         self.validation_hashes_collection = self.db["session_validation_hashes"]
         self.session_summaries: Optional[SessionSummaryList] = None  # Renamed for clarity
@@ -392,6 +394,7 @@ class SessionPersistenceManager:
             query = {"user_id": user_id} if user_id else {}
         projection = {
             "_id": 1,
+            "data.user_query": 1,
             "user_id": 1,
             "created_at": 1,
             "updated_at": 1,
@@ -422,9 +425,15 @@ class SessionPersistenceManager:
                 if not isinstance(updated_dt, datetime):
                     updated_dt = from_iso(str(updated_dt)) or datetime.now(timezone.utc)
 
+                # Extract user_query from the nested data field
+                user_query = None
+                if "data" in doc and isinstance(doc["data"], dict):
+                    user_query = doc["data"].get("user_query")
+                
                 summaries.append(
                     SessionSummary(
                         session_id=str(doc["_id"]),
+                        user_query=user_query,
                         user_id=doc.get("user_id"),
                         created_at=created_dt,
                         updated_at=updated_dt,

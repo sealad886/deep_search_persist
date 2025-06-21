@@ -2,6 +2,7 @@ import asyncio  # Added for async operations
 import copy
 import datetime
 import json  # Added for SSE
+from typing import Any, Dict, cast
 import os
 import re  # Added for stripping think tags for logic
 import time
@@ -54,15 +55,15 @@ async def health_check():
 
 
 # --- Transformer to handle both OpenAI-style (list) and server Messages ---
-def transform_chat_completion_request(raw_body: dict) -> ChatCompletionRequest:
+def transform_chat_completion_request(raw_body: dict[str, Any]) -> ChatCompletionRequest:
     body = copy.deepcopy(raw_body)
     messages = body.get("messages")
     # If messages is a list of dicts, convert to Messages
     if isinstance(messages, list):
-        body["messages"] = Messages(messages=[Message(**m) for m in messages])
+        body["messages"] = Messages(messages=[Message(**m) for m in cast(List[Dict[str, Any]], messages)])
     elif isinstance(messages, dict):
         # Single message dict, wrap in Messages
-        body["messages"] = Messages(messages=[Message(**messages)])
+        body["messages"] = Messages(messages=[Message(**cast(Dict[str, Any], messages))])
     elif isinstance(messages, Messages):
         pass  # Already correct
     else:
@@ -88,7 +89,7 @@ async def chat_completions(request: Request):
         research_state: Optional[ResearchSession] = None
         # session_filepath: Optional[Path] = None  # No longer needed
 
-        def create_sse_event_data(content_data: dict) -> str:
+        def create_sse_event_data(content_data: dict[str, Any]) -> str:
             """Helper to format data for SSE."""
             return f"data: {json.dumps(content_data)}\n\n"
 
@@ -387,7 +388,7 @@ async def list_sessions() -> SessionSummaryList:
         # Map persistence SessionSummary to api_models.SessionSummary
         api_summary = SessionSummary(
             session_id=s.session_id,
-            user_query="",  # user_query is not available in persistence summary
+            user_query=s.user_query or "",  # Use user_query from persistence layer
             status=s.status.value,  # Convert Enum to string
             start_time=(s.created_at if s.created_at is not None else datetime.datetime.now()),
             end_time=(s.updated_at if s.updated_at is not None else None),  # end_time is Optional in API model
@@ -399,11 +400,8 @@ async def list_sessions() -> SessionSummaryList:
             if earliest_time is None or s.created_at < earliest_time:
                 earliest_time = s.created_at
 
-    # The SessionSummaryList model expects a string for start_time
-    return SessionSummaryList(
-        sessions=api_summaries,
-        start_time=earliest_time.isoformat() if earliest_time else "",
-    )
+    # Return the session summaries list
+    return SessionSummaryList(sessions=api_summaries)
 
 
 @app.get("/sessions/{session_id}")

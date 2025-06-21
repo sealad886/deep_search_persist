@@ -1,14 +1,40 @@
 import os
 from pathlib import Path
-from unittest.mock import mock_open, patch
+from unittest.mock import patch, mock_open
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
-import pytest
-import tomllib
-
-# Import the functions to be tested
-from deep_search_persist.deep_search_persist.configuration import config_data, get_config_value, load_config
+from deep_search_persist.deep_search_persist.configuration import AppConfig
 
 # Define a mock TOML content
+MOCK_TOML_CONTENT_INCOMPLETE_REVISED = """
+[Persistence]
+sessions_dir = "./test_sessions_incomplete" # Loaded
+
+[LocalAI]
+# ollama_base_url is missing (default: "http://localhost:11434")
+default_model = "test-model-incomplete"    # Loaded
+# default_model_ctx is missing (default: -1, or actual default from AppConfig class if not -1)
+
+[API]
+openai_compat_api_key = "key_from_incomplete_toml" # Loaded
+# searxng_url is missing (default: "http://localhost:8080")
+
+[Settings]
+# use_ollama is missing (default: True)
+with_planning = false # Loaded
+
+[Concurrency]
+cool_down = 2.5  # Loaded
+# concurrent_limit is missing (default: 3)
+
+[Logging]
+# level is missing (default: "INFO")
+rotation = "5 MB" # Loaded
+"""
+
 MOCK_TOML_CONTENT = """
 [Persistence]
 sessions_dir = "./test_sessions"
@@ -56,152 +82,115 @@ fallback_model = "test-fallback-model"
 """
 
 
-# Reset config_data before each test to ensure isolation
-@pytest.fixture(autouse=True)
-def reset_config_data():
-    global config_data
-    original_config_data = config_data.copy()
-    config_data = {}
-    yield
-    config_data = original_config_data  # Restore original state if needed, though resetting is better for unit tests
-
 
 @patch("deep_search_persist.deep_search_persist.configuration.CONFIG_FILE_PATH", new=Path("/fake/path/research.toml"))
-@patch(
-    "deep_search_persist.deep_search_persist.configuration.open", new_callable=mock_open, read_data=MOCK_TOML_CONTENT
-)
-@patch("deep_search_persist.deep_search_persist.configuration.tomllib.load")
-def test_load_config_success(mock_toml_load, mock_file_open):
-    """Test successful loading of configuration from a TOML file."""
-    mock_toml_load.return_value = tomllib.loads(MOCK_TOML_CONTENT)
-    load_config()
-    assert config_data is not None
-    assert "Persistence" in config_data
-    assert config_data["Persistence"]["sessions_dir"] == "./test_sessions"
-    mock_file_open.assert_called_once_with(Path("/fake/path/research.toml"), "rb")
-    mock_toml_load.assert_called_once()
+@patch("deep_search_persist.deep_search_persist.configuration.Path.exists")
+@patch("deep_search_persist.deep_search_persist.configuration.open", new_callable=mock_open, read_data=MOCK_TOML_CONTENT)
+def test_load_config_success(mock_open_file, mock_path_exists):
+    """Test successful loading of configuration from a TOML file using AppConfig."""
+    mock_path_exists.return_value = True # Ensure CONFIG_FILE_PATH.exists() is true
+
+    # Instantiate AppConfig - this will trigger the loading logic in __post_init__
+    # Explicitly pass the path to ensure the patched path is used for this instance.
+    test_app_config = AppConfig(config_file_path=Path("/fake/path/research.toml"))
+
+    assert test_app_config.sessions_dir == "./test_sessions"
+    assert test_app_config.ollama_base_url == "http://test-ollama:11434"
+    assert test_app_config.default_model_ctx == 4096
+    assert test_app_config.use_ollama is True
+    assert test_app_config.concurrent_limit == 5
+
+    # Check that the mock file was opened at the patched CONFIG_FILE_PATH
+    mock_open_file.assert_called_once_with(Path("/fake/path/research.toml"), "rb")
+    # tomllib.load is called internally by AppConfig, no need to mock it directly for this test if open is mocked correctly.
+    # If we wanted to test tomllib.load behavior (e.g. exceptions), we would mock tomllib.load.
 
 
-@patch(
-    "deep_search_persist.deep_search_persist.configuration.CONFIG_FILE_PATH", new=Path("/fake/path/non_existent.toml")
-)
-@patch("deep_search_persist.deep_search_persist.configuration.open", side_effect=FileNotFoundError)
-def test_load_config_file_not_found(mock_file_open):
-    """Test loading configuration when the file is not found."""
-    load_config()
-    assert config_data == {}
-    mock_file_open.assert_called_once_with(Path("/fake/path/non_existent.toml"), "rb")
+@patch("deep_search_persist.deep_search_persist.configuration.Path.exists")
+def test_load_config_file_not_found(mock_path_exists):
+    """Test AppConfig initialization when the config file is not found."""
+    mock_config_path = Path("/fake/path/non_existent.toml")
+    mock_path_exists.return_value = False
+
+    # Instantiate AppConfig, passing the path that mock_path_exists is configured for
+    test_app_config = AppConfig(config_file_path=mock_config_path)
+
+    # Assert that AppConfig instance uses default values
+    # These defaults come from the AppConfig class definition itself.
+    assert test_app_config.sessions_dir == "./sessions"
+    assert test_app_config.ollama_base_url == "http://localhost:11434"
+    assert test_app_config.default_model == "mistral-openorca:latest"
+    assert test_app_config.use_ollama is True # Default from AppConfig class
+    mock_path_exists.assert_called_once_with()
 
 
-@patch("deep_search_persist.deep_search_persist.configuration.CONFIG_FILE_PATH", new=Path("/fake/path/invalid.toml"))
+@patch("deep_search_persist.deep_search_persist.configuration.Path.exists")
 @patch("deep_search_persist.deep_search_persist.configuration.open", new_callable=mock_open, read_data="invalid toml")
-@patch(
-    "deep_search_persist.deep_search_persist.configuration.tomllib.load",
-    side_effect=tomllib.TOMLDecodeError("Invalid TOML", "", 0),
-)
-def test_load_config_toml_decode_error(mock_toml_load, mock_file_open):
-    """Test loading configuration when TOML decoding fails."""
-    load_config()
-    assert config_data == {}
-    mock_file_open.assert_called_once_with(Path("/fake/path/invalid.toml"), "rb")
+@patch("deep_search_persist.deep_search_persist.configuration.tomllib.load")
+@patch("deep_search_persist.deep_search_persist.configuration.logger.error") # To check if error is logged
+def test_load_config_toml_decode_error(mock_logger_error, mock_toml_load, mock_open_file, mock_path_exists):
+    """Test AppConfig initialization when TOML decoding fails."""
+    mock_config_path = Path("/fake/path/invalid.toml")
+    mock_path_exists.return_value = True
+    mock_toml_load.side_effect = tomllib.TOMLDecodeError("Invalid TOML", "", 0)
+
+    test_app_config = AppConfig(config_file_path=mock_config_path)
+
+    # Assert that AppConfig instance uses default values
+    assert test_app_config.sessions_dir == "./sessions"
+    assert test_app_config.ollama_base_url == "http://localhost:11434"
+
+    mock_open_file.assert_called_once_with(mock_config_path, "rb")
     mock_toml_load.assert_called_once()
+    mock_logger_error.assert_called_once() # Check that an error was logged
 
 
-# Mock load_config to ensure config_data is populated for get_config_value tests
-@patch("deep_search_persist.deep_search_persist.configuration.load_config")
-def test_get_config_value_existing(mock_load_config):
-    """Test retrieving an existing configuration value."""
-    global config_data
-    config_data = tomllib.loads(MOCK_TOML_CONTENT)
-    value = get_config_value("Persistence", "sessions_dir")
-    assert value == "./test_sessions"
-    mock_load_config.assert_called_once()  # load_config should be called if config_data is initially empty
+@patch("deep_search_persist.deep_search_persist.configuration.Path.exists")
+@patch("deep_search_persist.deep_search_persist.configuration.open", new_callable=mock_open, read_data=MOCK_TOML_CONTENT_INCOMPLETE_REVISED)
+def test_app_config_uses_defaults_for_missing_toml_keys(mock_open_file, mock_path_exists):
+    """Test that AppConfig uses class-defined defaults for keys missing in TOML."""
+    mock_config_path = Path("/fake/path/incomplete_research.toml")
+    mock_path_exists.return_value = True
+
+    test_app_config = AppConfig(config_file_path=mock_config_path)
+
+    # Assert values that ARE in MOCK_TOML_CONTENT_INCOMPLETE_REVISED are loaded
+    assert test_app_config.sessions_dir == Path("./test_sessions_incomplete") # Path object
+    assert test_app_config.default_model == "test-model-incomplete"
+    assert test_app_config.openai_compat_api_key == "key_from_incomplete_toml"
+    assert test_app_config.with_planning is False # Loaded as false
+    assert test_app_config.cool_down == 2.5
+    assert test_app_config.log_rotation == "5 MB"
+
+    # Assert values that are MISSING in MOCK_TOML_CONTENT_INCOMPLETE_REVISED use AppConfig defaults
+    # These defaults are from the AppConfig._get_config_value calls
+    assert test_app_config.ollama_base_url == "http://localhost:11434"
+    assert test_app_config.default_model_ctx == -1 # Default from _get_config_value
+    assert test_app_config.base_searxng_url == "http://localhost:8080"
+    assert test_app_config.use_ollama is True
+    assert test_app_config.concurrent_limit == 3 # Default from _get_config_value
+    assert test_app_config.log_level == "INFO"
+
+    mock_open_file.assert_called_once_with(mock_config_path, "rb")
 
 
-@patch("deep_search_persist.deep_search_persist.configuration.load_config")
-def test_get_config_value_existing_with_type(mock_load_config):
-    """Test retrieving an existing configuration value with type conversion."""
-    global config_data
-    config_data = tomllib.loads(MOCK_TOML_CONTENT)
-    value_int = get_config_value("Concurrency", "concurrent_limit", value_type=int)
-    assert value_int == 5
-    assert isinstance(value_int, int)
+@patch.dict(os.environ, {"OLLAMA_BASE_URL": "http://env-ollama:11434"}) # Corrected ENV VAR NAME
+@patch("deep_search_persist.deep_search_persist.configuration.Path.exists")
+@patch("deep_search_persist.deep_search_persist.configuration.open", new_callable=mock_open, read_data=MOCK_TOML_CONTENT) # MOCK_TOML_CONTENT has ollama_base_url in [LocalAI]
+def test_app_config_overrides_toml_with_env_var(mock_open_file, mock_path_exists, _mock_env_dict_unused): # _mock_env_dict_unused from @patch.dict
+    """Test AppConfig prioritizes environment variables over TOML values."""
+    mock_config_path = Path("/fake/path/research.toml")
+    mock_path_exists.return_value = True # Simulate TOML file exists
 
-    value_float = get_config_value("Concurrency", "cool_down", value_type=float)
-    assert value_float == 0.5
-    assert isinstance(value_float, float)
+    # Instantiate AppConfig. It should load from the mocked TOML and then apply env overrides.
+    # The environment variable OLLAMA_BASE_URL is set by @patch.dict
+    test_app_config = AppConfig(config_file_path=mock_config_path)
 
-    value_bool = get_config_value("Settings", "use_ollama", value_type=bool)
-    assert value_bool is True
-    assert isinstance(value_bool, bool)
+    # Assert that the ollama_base_url is from the environment variable, not the TOML file.
+    # MOCK_TOML_CONTENT defines: ollama_base_url = "http://toml-ollama:11434" in its [LocalAI] section
+    # Environment variable OLLAMA_BASE_URL is "http://env-ollama:11434"
+    assert test_app_config.ollama_base_url == "http://env-ollama:11434"
 
-    value_bool_str = get_config_value("Settings", "use_ollama", value_type="bool")
-    assert value_bool_str is True
-    assert isinstance(value_bool_str, bool)
-
-    mock_load_config.assert_called_once()
-
-
-@patch("deep_search_persist.deep_search_persist.configuration.load_config")
-def test_get_config_value_non_existing_with_default(mock_load_config):
-    """Test retrieving a non-existing configuration value with a default."""
-    global config_data
-    config_data = tomllib.loads(MOCK_TOML_CONTENT)
-    value = get_config_value("NonExistingSection", "non_existing_key", default="default_value")
-    assert value == "default_value"
-    mock_load_config.assert_called_once()
-
-
-@patch("deep_search_persist.deep_search_persist.configuration.load_config")
-def test_get_config_value_non_existing_no_default(mock_load_config):
-    """Test retrieving a non-existing configuration value without a default (should raise KeyError)."""
-    global config_data
-    config_data = tomllib.loads(MOCK_TOML_CONTENT)
-    with pytest.raises(KeyError, match="Mandatory key 'non_existing_key' not found in section 'NonExistingSection'"):
-        get_config_value("NonExistingSection", "non_existing_key")
-    mock_load_config.assert_called_once()
-
-
-@patch("deep_search_persist.deep_search_persist.configuration.load_config")
-def test_get_config_value_type_conversion_failure(mock_load_config):
-    """Test retrieving a value with a type conversion failure."""
-    global config_data
-    config_data = tomllib.loads(MOCK_TOML_CONTENT)
-    # Attempt to convert a string to an int where it's not possible
-    value = get_config_value("Persistence", "sessions_dir", default="default", value_type=int)
-    assert value == "default"  # Should return default on conversion failure
-    mock_load_config.assert_called_once()
-
-
-@patch("deep_search_persist.deep_search_persist.configuration.load_config")
-@patch("os.getenv")
-def test_get_config_value_from_env(mock_getenv, mock_load_config):
-    """Test retrieving a configuration value overridden by an environment variable."""
-    global config_data
-    config_data = tomllib.loads(MOCK_TOML_CONTENT)
-    # Simulate an environment variable being set
-    mock_getenv.return_value = "mongodb://env-mongo:27017/test_db"
-
-    # Note: The current get_config_value implementation doesn't check os.getenv
-    # directly. Environment variables are read in the configuration.py file itself
-    # when the globals are defined. This test needs to reflect that.
-    # We need to re-run the relevant part of configuration.py after setting the mock env var.
-
-    # Reset config_data and reload config after setting the mock env var
-    config_data = {}
-    with patch("deep_search_persist.deep_search_persist.configuration.os.getenv", mock_getenv):
-        # Re-import or re-run the relevant part of configuration.py
-        # A cleaner way in tests is to mock the specific variable assignment
-        with patch(
-            "deep_search_persist.deep_search_persist.configuration.OLLAMA_BASE_URL",
-            os.getenv("OLLAMA_BASE_URL", get_config_value("LocalAI", "ollama_base_url", "http://localhost:11434")),
-        ):
-            # Now test the variable that was set based on the environment variable
-            from deep_search_persist.deep_search_persist.configuration import (
-                OLLAMA_BASE_URL,
-            )  # Re-import to get the updated value
-
-            assert OLLAMA_BASE_URL == "mongodb://env-mongo:27017/test_db"
-
-    mock_load_config.assert_called_once()
-    mock_getenv.assert_called_once_with("OLLAMA_BASE_URL", "http://test-ollama:11434")
+    # Check that the file was attempted to be read and path checked
+    mock_open_file.assert_called_once_with(mock_config_path, "rb")
+    mock_path_exists.assert_called_once_with(mock_config_path)

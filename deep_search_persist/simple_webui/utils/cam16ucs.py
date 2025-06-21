@@ -13,7 +13,7 @@ from typing import Tuple, List
 from dataclasses import dataclass
 
 # Import centralized logger from deep_search_persist
-from ...deep_search_persist.logging.logging_config import logger
+from deep_search_persist.deep_search_persist.logging.logging_config import logger
 
 
 @dataclass

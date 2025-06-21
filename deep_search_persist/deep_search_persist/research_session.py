@@ -4,6 +4,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from bson import ObjectId
+from loguru import logger
 from pydantic import BaseModel, Field, ConfigDict
 
 from .helper_classes import Messages
@@ -25,11 +26,18 @@ class ResearchSession(BaseModel):
             "aggregated_contexts": [],
             "last_plan": None,
             "last_completed_iteration": -1,
+            "current_iteration_data": {
+                "search_queries": [],
+                "current_query": None,
+                "links": [],
+                "contexts": [],
+                "plan": None,
+            },
         }
     )
     chat_history: Messages = Field(default_factory=Messages)
     mongo_object_id: Optional[ObjectId] = None
-    
+
     def dict(self, *args, **kwargs):
         d = super().dict(*args, **kwargs)
         # Serialize chat_history to a list of dicts for Mongo
@@ -68,7 +76,7 @@ class ResearchSession(BaseModel):
             with open(filepath, "w") as f:
                 json.dump(self.to_dict(), f, indent=2)
         except Exception as e:
-            print(f"Error saving session {self.session_id} to {filepath}: {e}")
+            logger.error(f"Error saving session {self.session_id} to {filepath}: {e}")
 
     @classmethod
     def load_session(cls, filepath: Path) -> Optional["ResearchSession"]:
@@ -112,7 +120,7 @@ class ResearchSession(BaseModel):
                     session.chat_history = Messages.from_list_of_dicts(chat_history_data)
                 # More specific exception handling for chat history
                 except Exception as e_chat:
-                    print(
+                    logger.warning(
                         f"Error loading chat_history for session {session.session_id}: {e_chat}. "
                         "Initializing empty chat history."
                     )
@@ -126,5 +134,8 @@ class ResearchSession(BaseModel):
             session.error_message = data.get("error_message")
             return session
         except Exception as e:
-            print(f"Error loading session from {filepath}: {e}")
+            logger.error(f"Error loading session from {filepath}: {e}")
             return None
+
+    def __setitem__(self, key: str, value: Any, /) -> None:
+        super().__setattr__(key, value)

@@ -32,10 +32,10 @@ Configure your preferred mode by adjusting settings like `use_jina`, `use_ollama
 
 ### Prerequisites
 
-* Python (>=3.10,<3.13)
-* Docker and Docker Compose (optional, for Docker-based deployment).
-* MongoDB (no manual setup required if using Docker Compose)
-* **Ollama (required for Hybrid/Local modes using local LLMs)** - **Must run locally, not in Docker**
+* **Docker and Docker Compose** - **Recommended primary deployment method**
+* **Ollama (required for Local AI)** - **Must run locally on host machine, not in Docker**
+* Python (>=3.10,<3.13) - **Only required for development or manual installation**
+* MongoDB (no manual setup required - automatically configured in Docker)
 
 ### MongoDB Session Persistence
 
@@ -102,21 +102,9 @@ For installing dependencies, you can use the following methods:
 
 ## Running the Application
 
-### 1. Direct Python Execution (Recommended for development/custom use)
+### 1. Using Docker (🎯 **RECOMMENDED - Primary Deployment Method**)
 
-Ensure dependencies are installed and [`research.toml`](research.toml:1) is configured.
-
-Run the API server:
-
-```bash
-python -m deep-search-persist
-```
-
-The API will typically be available at `http://localhost:8000/v1`.
-
-### 2. Using Docker (Recommended for stable deployment)
-
-Docker provides a containerized environment with all dependencies pre-configured.
+**Docker is the recommended way to run DeepSearch with Persisting History.** It provides a complete containerized environment with all dependencies pre-configured and validated.
 
 #### Prerequisites for Docker
 
@@ -134,6 +122,8 @@ Docker provides a containerized environment with all dependencies pre-configured
 * **External Configuration:** The primary configuration is managed via a mounted `research.toml` file from the project root.
 
 #### Configuration for Docker
+
+[!IMPORTANT] You should copy `research.example.toml` into a new file called `research.toml`. This is automatically excluded by `.gitignore`.
 
 The `research.toml` file located at the project root is the primary configuration source for the `deep-search-persist` application running within Docker. This file is mounted into the `deep-search-persist` container, and all application settings are read from this file.
 
@@ -212,13 +202,53 @@ Key sections in `research.toml` relevant to Docker users include:
 
 Once the services are running, you can access them at the following default addresses:
 
-* **API Endpoint:** `http://localhost:8000/v1`
-* **Web UI:** `http://localhost:7860`
-* **SearXNG:** `http://localhost:4000` (if using the included SearXNG service).
+* **Web UI:** `http://localhost:7860` - **Primary interface for research tasks**
+* **API Endpoint:** `http://localhost:8000/v1` - OpenAI-compatible API
+* **SearXNG:** `http://localhost:4000` - Search engine interface
+
+#### Quick Start Commands
+
+```bash
+# 1. Start Ollama (required for local AI)
+ollama serve
+
+# 2. Pull required models  
+ollama pull qwen3:14b
+ollama pull phi4-reasoning
+
+# 3. Start Docker services
+cd docker
+docker compose -f docker-compose.persist.yml up --build
+
+# 4. Open Web UI: http://localhost:7860
+```
+
+### 2. Alternative: Direct Python Execution (Development Only)
+
+**⚠️ Note:** Docker deployment is recommended. This method is primarily for development.
+
+Ensure dependencies are installed and [`research.toml`](research.toml:1) is configured.
+
+```bash
+# Install dependencies
+pip install .[all]
+
+# Run the API server
+python -m deep-search-persist
+
+# In separate terminal: Run the Web UI
+cd simple_webui
+python gradio_online_mode.py
+```
+
+The API will be available at `http://localhost:8000/v1` and WebUI at `http://localhost:7860`.
 
 ## Using the Web UI (Gradio)
 
 The Web UI provides an easy way to interact with the research agent, especially for starting new tasks and resuming sessions.
+
+![WebUI Research Interface](docs/images/webui-research-tab.png)
+*Main research interface with system message input, query configuration, and progress tracking*
 
 ### Starting the UI
 
@@ -238,14 +268,29 @@ Access the UI in your browser, typically at `http://localhost:7860`.
 
 The Gradio interface includes three main tabs:
 
-1. **Research Tab**: Core research functionality with streaming responses
-2. **Session Management Tab**: View, manage, and delete saved research sessions
-3. **System Status Tab**: Monitor Docker containers and Ollama server status
-   - Real-time status monitoring with visual indicators (✅/❌/⚠️)
-   - Docker container health checking
-   - Ollama server connectivity and model availability
-   - Terminal launch button (when Ollama is not running)
-   - Configurable terminal commands via `research.toml`
+#### 1. Research Tab
+Core research functionality with streaming responses, model selection, and session management.
+
+#### 2. Session Management Tab
+![Session Management Interface](docs/images/webui-session-management.png)
+*Session management with refresh, selection, and detailed session data viewing*
+
+View, manage, and delete saved research sessions with features including:
+- Session list refresh and selection
+- View detailed session data and status
+- Delete unwanted sessions
+- Resume interrupted research tasks
+
+#### 3. System Status Tab  
+![System Status Interface](docs/images/webui-system-status.png)
+*Real-time system monitoring with Ollama server management and status indicators*
+
+Monitor Docker containers and Ollama server status with:
+- Real-time status monitoring with visual indicators (✅/❌/⚠️)
+- Docker container health checking
+- Ollama server connectivity and model availability
+- Terminal launch button (when Ollama is not running)
+- Configurable terminal commands via `research.toml`
 
 ### Interacting with the UI
 
@@ -258,7 +303,17 @@ The Gradio interface includes three main tabs:
 
 The application exposes an OpenAI-compatible API endpoint for programmatic access.
 
-**Endpoint:** `http://localhost:8000/v1/chat/completions`
+![API Health Check](docs/images/api-health-response.png)
+*API health endpoint returning JSON status*
+
+**Primary Endpoint:** `http://localhost:8000/v1/chat/completions`
+
+**Additional Endpoints:**
+- **Health Check:** `http://localhost:8000/health`
+- **Session Management:** `http://localhost:8000/sessions`
+
+![Sessions API](docs/images/api-sessions-list.png)
+*Sessions endpoint showing saved research sessions in JSON format*
 
 **Key Parameters in Request Body:**
 
@@ -364,16 +419,33 @@ The process begins with a user query or a request to resume a session via a `ses
 
 ## Testing
 
-The project includes a suite of tests to ensure functionality and stability.
+The project includes a comprehensive test suite focused on Docker deployment validation.
 
-Tests for the core persistence logic and other components are located in `deep-search-persist/tests/`.
-
-To run tests (example using pytest):
+### Running Tests
 
 ```bash
-pip install pytest pytest-asyncio
-pytest deep-search-persist/tests/
+# Run all tests with Docker validation (recommended)
+python run_tests.py
+
+# Run only Docker-specific tests
+python run_tests.py --docker
+
+# Run only unit tests  
+python run_tests.py --unit
+
+# Validate Docker setup only
+python run_tests.py --validate
 ```
+
+### Test Categories
+
+* **Docker Integration Tests** - Complete multi-container validation
+* **WebUI Tests** - Color schemes, accessibility, session management
+* **API Tests** - Health endpoints, session persistence, error handling
+* **Unit Tests** - Individual component testing
+* **E2E Tests** - Full workflow validation
+
+All critical functionality is validated for Docker deployment mode.
 
 ## Roadmap
 

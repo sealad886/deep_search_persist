@@ -7,12 +7,14 @@ reason_model_ctx = -1
 openai_compat_api_key = "${OPENAI_COMPAT_API_KEY}"
 jina_api_key = "${JINA_API_KEY}"
 openai_url = "${OPENAI_URL}"
+lmstudio_base_url = "${LMSTUDIO_BASE_URL}"
+lmstudio_api_key = "${LMSTUDIO_API_KEY}"
 jina_base_url = "${JINA_BASE_URL}"
 searxng_url = "${SEARXNG_URL}"
 
 [Settings]
 use_jina = false
-use_ollama = true
+llm_provider = "ollama"  # Options: "ollama", "lmstudio", "openai_compatible"
 with_planning = true
 default_model = "gemma3:4b"
 reason_model = "qwen3:14b"
